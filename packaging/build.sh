@@ -135,6 +135,12 @@ tar -xzf "$(fetch_python x86_64-pc-windows-msvc)" -C "$WIN"
   "$PYWEBVIEW" "$PYPDF" "$TRUSTSTORE" pythonnet==3.2.1 clr_loader==0.3.1 cffi==2.1.1 pycparser bottle typing_extensions
 cp -R "$RES/python/lib/python3.12/site-packages/proxy_tools" "$WIN/python/Lib/site-packages/"
 copy_app "$WIN/app"
+# Microsoft's WebView2 installer (about 2 MB, free to ship with apps): the app runs it on a PC without WebView2, which
+# the app window needs (issue #17). It fetches the current WebView2 itself, so this file rarely needs refreshing.
+WV2="$CACHE/MicrosoftEdgeWebview2Setup.exe"
+[ -f "$WV2" ] || curl -L --fail -sS -o "$WV2" "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+[ "$(head -c 2 "$WV2")" = "MZ" ] || { echo "not a Windows program: $WV2" >&2; rm -f "$WV2"; exit 1; }
+cp "$WV2" "$WIN/app/"
 # Where the app fetches Ollama on first use (checked against Ollama's published checksum).
 "$RES/python/bin/python3" - "$CACHE/ollama-sha256-$OLLAMA_VERSION.txt" "$OLLAMA_URL/ollama-windows-amd64.zip" \
   "$WIN/app/engine.json" <<'PY'

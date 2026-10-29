@@ -2011,12 +2011,65 @@ def prompt_for(caps):
     return (custom_prompt() or system_prompt(library(), tools)) + (f"\n\n{extra}" if extra else "")
 
 
+WEBVIEW2_SETUP = os.path.join(ROOT, "MicrosoftEdgeWebview2Setup.exe")  # Microsoft's installer, in the Windows app
+WEBVIEW2_URL = "https://developer.microsoft.com/microsoft-edge/webview2/"
+WEBVIEW2_KEYS = ("{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}", "{2CD8A007-E189-409D-A2C8-9AF4EF3C72AA}",  # runtime, beta,
+                 "{0D50BFEC-CD6A-4F9A-964C-C7416E3ACB10}", "{65C35B14-6C1D-4122-AC46-7148CC9D6497}")  # dev, canary
+
+
+def webview2_ready():
+    """Whether Windows has what the app window needs, checked the way pywebview checks it: WebView2 86 or newer and
+    .NET 4.6.2 or newer. Without them pywebview quietly uses Internet Explorer's engine, which can't run this page
+    (issue #17: every dialog open at once, nothing working)."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full") as key:
+            if winreg.QueryValueEx(key, "Release")[0] < 394802:
+                return False
+    except OSError:
+        return False
+    for key in WEBVIEW2_KEYS:
+        for hive in ("HKEY_CURRENT_USER", "HKEY_LOCAL_MACHINE"):
+            node = "" if hive == "HKEY_CURRENT_USER" or platform.machine() == "x86" else "WOW6432Node\\"
+            try:
+                with winreg.OpenKey(getattr(winreg, hive), rf"SOFTWARE\{node}Microsoft\EdgeUpdate\Clients\{key}") as k:
+                    if int(str(winreg.QueryValueEx(k, "pv")[0]).split(".")[0] or 0) >= 86:
+                        return True
+            except (OSError, ValueError):
+                pass
+    return False
+
+
+def ensure_webview2():
+    """On Windows, install WebView2 with Microsoft's installer when it's missing, so the app opens in its own window.
+    False when it still can't (no internet, or Windows refused), after saying so; the app then opens in the browser."""
+    try:
+        if webview2_ready():
+            return True
+        if os.path.exists(WEBVIEW2_SETUP):
+            print("Installing Microsoft WebView2, which the app window needs.", flush=True)
+            subprocess.run([WEBVIEW2_SETUP, "/install"], timeout=900)  # shows Microsoft's own progress window
+            from webview.platforms import winforms  # decides its web engine when first imported, so only after this
+            if winforms.is_chromium:
+                return True
+    except Exception as exc:  # a check that fails mustn't stop the app: carry on as before
+        print(f"Couldn't check or install WebView2 ({exc}).", flush=True)
+        return True
+    ctypes.windll.user32.MessageBoxW(
+        0, "Survival LLM needs Microsoft's free WebView2 to show its own window, and couldn't install it (it needs the "
+        f"internet the first time). It opens in your web browser for now.\n\nTo get the app window, install WebView2 "
+        f"from {WEBVIEW2_URL} and open Survival LLM again.", "Survival LLM", 0x40)
+    return False
+
+
 def open_window(url):
     """Show the app in its own window (the system's built-in web view) until it is closed. False when this
     computer can't (pywebview or the web view missing), so the caller falls back to the browser."""
     try:
         import webview
     except ImportError:
+        return False
+    if os.name == "nt" and not ensure_webview2():
         return False
     try:
         webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True  # source links go to the browser, not this window
