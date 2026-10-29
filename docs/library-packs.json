@@ -2,53 +2,55 @@
  "packs": [
   {
    "id": "lite",
-   "label": "Essentials: medical, emergency, survival, how-to and repair (1.3 GB, 497,236 articles)",
+   "label": "Essentials: medical, emergency, survival, how-to and repair (1.3 GB, 494,574 articles)",
    "gb": 1.3,
-   "articles": 497236,
-   "version": "2026-10-24",
-   "install_bytes": 4447747645,
+   "articles": 494574,
+   "version": "2026-10-28",
+   "install_bytes": 4509641710,
    "parts": [
     {
-     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/v0.1.0/library-lite.zip.000",
-     "bytes": 1303588795,
-     "sha256": "60aac5c9170bb11186c7caa6750d8655943340130e646c0bf3e53b5a202cfc24"
+     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/library-2026-10-28/library-lite.zip.000",
+     "bytes": 1275477229,
+     "sha256": "0e9fc46df8288c1aa9a81b87386acd224963b8a1b2fd44d51078089d3dee8686"
     }
-   ]
+   ],
+   "notes": "It drops about 2,700 repeated pages, so searches show more different articles."
   },
   {
    "id": "full",
-   "label": "Everything: Essentials plus about 930,000 of Wikipedia's most-read articles and iFixit (8.8 GB, 1,509,998 articles)",
-   "gb": 8.8,
-   "articles": 1509998,
-   "version": "2026-10-24",
-   "install_bytes": 21764212975,
+   "label": "Everything: Essentials plus about 930,000 of Wikipedia's most-read articles and iFixit (8.7 GB, 1,507,306 articles)",
+   "gb": 8.7,
+   "articles": 1507306,
+   "version": "2026-10-28",
+   "install_bytes": 22332537074,
    "parts": [
     {
-     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/v0.1.0/library-full.zip.000",
+     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/library-2026-10-28/library-full.zip.000",
      "bytes": 1900000000,
-     "sha256": "c518814d23a2795a76a113772e24b16394f3038580d5aad06fdc4a818ed10f84"
+     "sha256": "57bfb07c449bde58034ebac34aa09035bfde161a1a4bbe141833d42f9048aaeb"
     },
     {
-     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/v0.1.0/library-full.zip.001",
+     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/library-2026-10-28/library-full.zip.001",
      "bytes": 1900000000,
-     "sha256": "4de34415c82bcfb704befd9e1bd3165d71e77e9ea63eaca8dba69ab706b695a4"
+     "sha256": "9bfe149c963d090b2c9d1d393beb4da7c8f61b17b13f192b417d25fb860d363b"
     },
     {
-     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/v0.1.0/library-full.zip.002",
+     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/library-2026-10-28/library-full.zip.002",
      "bytes": 1900000000,
-     "sha256": "d2c8a4a9682d145e8a30b1b3f7d1381362685c46d8225e0c0c561c35b3cb0e99"
+     "sha256": "88c9b8e5d8abf5d8f84d7509edb8305024da18dc43ee1e8be5a01bb0af1668de"
     },
     {
-     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/v0.1.0/library-full.zip.003",
+     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/library-2026-10-28/library-full.zip.003",
      "bytes": 1900000000,
-     "sha256": "11de8b896ac6797c0c6a273c8e807a8662876fd917c6348b8ba7d319c1375b72"
+     "sha256": "da87c3b7e1a49fe35cf1c2a5084104e284f70d0b4dd6faebc0d6e5107b5c126c"
     },
     {
-     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/v0.1.0/library-full.zip.004",
-     "bytes": 1207274060,
-     "sha256": "b73abba716339fb8d5168582de055dda1609f7409b22da623db5b69fffb051ab"
+     "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/library-2026-10-28/library-full.zip.004",
+     "bytes": 1056720766,
+     "sha256": "75f8107d419fe5891296de3342bd2798d749001c10651fe4e593bca13bfe0a26"
     }
-   ]
+   ],
+   "notes": "It drops about 2,700 repeated pages, so searches show more different articles."
   }
  ]
 }

@@ -1,19 +1,20 @@
 {
- "version": "0.3.4",
- "date": "2026-10-27",
+ "version": "0.4.0",
+ "date": "2026-10-29",
  "notes": [
-  "Reasoning, next to Send: choose how much the AI may think before it answers (Off to 16,000 tokens, or no limit). At the limit it answers from what it has. Replaces Think harder.",
-  "When the AI looked things up but never wrote an answer, it now tries again with the best articles it found.",
-  "Ask it to look something up and it searches the library, even if it first answered from memory."
+  "Simpler first-time setup: pick the library and the AI on one screen, see the speed and time left, and downloads pick up again after a dropped connection or a quit.",
+  "Switch between Essentials and Everything, move the library to another folder or drive, and choose which folder Your files searches.",
+  "After updating, the app offers a cleaner library without about 2,700 repeated pages. Yours keeps working until the new one is in.",
+  "A clearer message when an older Ollama app on your computer can't download a model."
  ],
  "mac": {
-  "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/v0.3.4/Survival-LLM-mac.zip",
-  "bytes": 212814787,
-  "sha256": "5467aeb9eaecf535759590cef7a896efe11bbfa9233b9f1d13d0681df91d0a7b"
+  "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/v0.4.0/Survival-LLM-mac.zip",
+  "bytes": 212832904,
+  "sha256": "65cd34f3f894bc6c426b6f09665b963523d70976a267d6bfd460efe6ae423334"
  },
  "windows": {
-  "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/v0.3.4/Survival-LLM-windows.zip",
-  "bytes": 25222532,
-  "sha256": "0dd8fa8e8c45a29cb00b777753c15fca7f72630d0e73a42df76c6a1db9c23194"
+  "url": "https://github.com/anonnerdfrenzy/survival-llm/releases/download/v0.4.0/Survival-LLM-windows.zip",
+  "bytes": 25240549,
+  "sha256": "18aa88390ab01af8f0696f54c09f4b70fb8f7f9a5f832f8a7035a4a5745243a9"
  }
 }
