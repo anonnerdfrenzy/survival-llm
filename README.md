@@ -56,12 +56,17 @@ The app checks your memory and suggests a model. More memory, smarter model.
 | Mac with 128 GB or more | NVIDIA Nemotron 3.5 Super (`nemotron-3.5-super:120b-a12b-nvfp4`) | 80 GB |
 | Mac with 32-96 GB | Qwen3.8 27B (`qwen3.8:27b-mlx`) | 18 GB |
 | Windows PC with 32 GB or more | NVIDIA Nemotron 3.5 Lightning (`nemotron-3.5-lightning:30b-a3b`) | 25 GB |
-| Mac or PC with 16-31 GB | IBM Granite 4.2 8B (`granite4.2:8b`) | 6 GB |
+| Mac or PC with 16-31 GB | Qwen3.5 9B (Unsloth's Q6_K with multi-token prediction) | 8 GB |
 
 Nemotron Super needs 128 GB because macOS lets the graphics side use only about three quarters of memory.
 
-Gemma 4 E4B (`gemma4`, 10 GB) is offered as a faster option for 16 GB computers. Computers with 8 GB can
-still search the library; no model we tested was both small enough and safe enough to recommend for them.
+16 GB computers are also offered Gemma 4 12B (Unsloth's QAT UD-Q4_K_XL with Google's multi-token prediction
+drafter, 7 GB), the most accurate there but it often answers from memory, IBM Granite 4.2 8B (`granite4.2:8b`, 6 GB)
+and the faster Gemma 4 E4B (`gemma4`, 10 GB). The app downloads the two Unsloth models' files from Hugging Face and
+builds them in Ollama (`survival-qwen3.5:9b`, `survival-gemma4:12b`) without the image encoder, which it doesn't
+use. The second test below used these files.
+Computers with 8 GB can still search the library; no model we tested was both small enough and safe enough to
+recommend for them.
 
 ## How the models did
 
@@ -96,6 +101,14 @@ means following it could hurt someone. Granite 4.2 3B, first planned for 8 GB co
 told people not to use a tourniquet on an arm and to stay 3 feet from a downed power line (the guidance is 35).
 Qwen 3.6 is not offered either: it got stuck repeating itself on two questions (once for 94 minutes),
 which is also why answers have a length limit (you can change it, or turn it off, next to Send).
+
+A second blind test graded Qwen3.5 9B and Gemma 4 12B on a 16 GB Ryzen 5 5600G PC, with the same 22 questions and
+method but its own judge instructions, and graded the Granite 4.2 8B answers above alongside them as a reference.
+Its judges scored Granite higher (67%, 17 of 22), so compare within that test: Gemma 4 12B 88%, 20 of 22, no
+harmful answers; Qwen3.5 9B 74-77% and 18-20 of 22 over two runs, with one harmful answer in one run (warm the
+hands and feet before the trunk for hypothermia). Gemma 4 12B never opened the library; Qwen3.5 9B searched for
+every question. Answers: `gemma4_12b`, `qwen3.5_9b` and `qwen3.5_9b-run2` in `evals/results/`, plus Gemma 4 12B
+with thinking on (`gemma4_12b-think`) and with a search-first prompt (`gemma4_12b-searchprompt`).
 
 The tests found and fixed two problems for every model: some kept looking things up until they ran out of
 lookups and never answered (now they are told to answer from what they read), and several gave "if you

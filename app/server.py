@@ -59,8 +59,14 @@ TOKEN = secrets.token_urlsafe(16)
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
         ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
 
+def _hf(repo, revision, name, size, sha256):
+    return {"name": name, "url": f"https://huggingface.co/{repo}/resolve/{revision}/{name}", "bytes": size,
+            "sha256": sha256}
+
+
 # Models the app offers. mac/win are Ollama names; min_ram is total memory in GB; gb is the download size.
 # Picks and blurbs come from evals/retrieval_eval.py (22 blackout and first-aid questions answered with the library).
+# Qwen3.5 9B and Gemma 4 12B come from a second run of it on a 16 GB PC (README, "How the models did").
 CATALOG = [
     {"key": "nemotron-super", "name": "Nemotron 3.5 Super", "maker": "NVIDIA", "min_ram": 128,
      "mac": "nemotron-3.5-super:120b-a12b-nvfp4", "win": "nemotron-3.5-super:120b-a12b", "gb": {"mac": 80, "win": 90},
@@ -75,6 +81,27 @@ CATALOG = [
      "blurb": {"mac": "The fastest: answers in a few seconds and saves battery. Sometimes misses details.",
                "win": "The best choice for most PCs: accurate and careful. Expect up to a minute per answer "
                       "on a typical PC."}},
+    {"key": "qwen-9b", "name": "Qwen3.5 9B", "maker": "Alibaba", "min_ram": 12,
+     "mac": "survival-qwen3.5:9b", "win": "survival-qwen3.5:9b", "gb": {"mac": 8, "win": 8},
+     "build": {"files": [_hf("unsloth/Qwen3.5-9B-MTP-GGUF", "9716a636ee4bddc3fed678220b7a33dd2a4160ae",
+                             "Qwen3.5-9B-Q6_K.gguf", 7684551008,
+                             "8ae8fd04e30c5a4af3ef72654729fb0d7f33615cac1ba335dd88084a56287934")],
+               "parameters": {"draft_num_predict": 1}},  # the file's own multi-token prediction layer
+     "blurb": {"mac": "The best fit for 16 GB computers: looks things up for every question and shows its sources.",
+               "win": "The best fit for 16 GB computers: looks things up for every question and shows its sources."}},
+    {"key": "gemma-12b", "name": "Gemma 4 12B", "maker": "Google", "min_ram": 12,
+     "mac": "survival-gemma4:12b", "win": "survival-gemma4:12b", "gb": {"mac": 7, "win": 7},
+     "build": {"files": [_hf("unsloth/gemma-4-12B-it-qat-GGUF", "980b060c40a8539ac159e0501a3e0f66a6365af3",
+                             "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf", 6716356800,
+                             "90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370")],
+               "draft_files": [_hf("unsloth/gemma-4-12B-it-qat-GGUF", "980b060c40a8539ac159e0501a3e0f66a6365af3",
+                                   "mtp-gemma-4-12B-it.gguf", 253708800,
+                                   "fcb35dea42c71333db904cee11baac525c9ef872818ee3753f6cb156f3c6f4f6")],
+               "parameters": {"draft_num_predict": 1}},  # Google's multi-token prediction drafter
+     "blurb": {"mac": "The most accurate for 16 GB computers. Often answers from memory instead of the library, "
+                      "so check what it says.",
+               "win": "The most accurate for 16 GB computers. Often answers from memory instead of the library, "
+                      "so check what it says."}},
     {"key": "granite-8b", "name": "Granite 4.2 8B", "maker": "IBM", "min_ram": 12,
      "mac": "granite4.2:8b", "win": "granite4.2:8b", "gb": {"mac": 6, "win": 6},
      "blurb": {"mac": "For 16 GB computers. Always looks things up and shows its sources, but makes more mistakes "
@@ -92,8 +119,9 @@ CATALOG = [
 # Granite 4.2 3B was dropped: 5 of its 22 test answers could hurt someone, 2 of them fatally.
 # Nemotron Super needs 128 GB: macOS lets the GPU use about three quarters of memory, and the model is 80 GB.
 # Windows doesn't get it: its 90 GB build would run mostly on the processor, far too slowly.
-PREFERENCE = {"mac": ["nemotron-super", "qwen-27b", "nemotron-lightning", "granite-8b", "gemma-e4b"],
-              "win": ["nemotron-lightning", "qwen-27b", "granite-8b", "gemma-e4b"]}
+PREFERENCE = {"mac": ["nemotron-super", "qwen-27b", "nemotron-lightning", "qwen-9b", "gemma-12b", "granite-8b",
+                      "gemma-e4b"],
+              "win": ["nemotron-lightning", "qwen-27b", "qwen-9b", "gemma-12b", "granite-8b", "gemma-e4b"]}
 ALIASES = {"granite4.2": "granite-8b"}  # granite4.2:latest is the same 8B model
 NOT_CHAT = ("embed", "bge-", "nomic", "minilm")
 DISK_MARGIN_GB = 5  # keep this much free after a download
@@ -738,6 +766,51 @@ def pull_worker(key, model):
             got = []
         with open(NEW_USER_GOT, "w") as f:
             json.dump(sorted(set(got) | {model.removesuffix(":latest")}), f)
+
+
+class _Relay:
+    """A download read straight into an upload, reporting progress to job key every 64 MB."""
+    def __init__(self, resp, key, done, total):
+        self.resp, self.key, self.done, self.total, self.reported = resp, key, done, total, done
+
+    def read(self, size=-1):
+        chunk = self.resp.read(size)
+        self.done += len(chunk)
+        if self.done - self.reported >= 1 << 26 or not chunk:
+            self.reported = self.done
+            _update(self.key, status="downloading", completed=self.done, total=self.total)
+        return chunk
+
+
+def build_worker(key, model):
+    """Install a catalog model Ollama's library doesn't have as is: stream its GGUF files from Hugging Face straight
+    into Ollama, which checks each file's sha256, then create the model from them. Unlike pulling a Hugging Face repo,
+    this leaves out the image encoder (a text-only app would load it for nothing) and can add a drafter."""
+    build = catalog_entry(model)["build"]
+    files = build["files"] + build.get("draft_files", [])
+    total, done = sum(f["bytes"] for f in files), 0
+    for f in files:
+        blob = f"{HOST}/api/blobs/sha256:{f['sha256']}"
+        try:
+            urllib.request.urlopen(urllib.request.Request(blob, method="HEAD"), timeout=30).close()
+        except urllib.error.HTTPError as exc:  # 404: Ollama doesn't have this file yet
+            if exc.code != 404:
+                raise
+            try:
+                download = urllib.request.urlopen(f["url"], timeout=120)
+            except urllib.error.HTTPError as exc:
+                raise RuntimeError(f"Couldn't download {f['name']} (error {exc.code}). Try again later.") from None
+            with download:
+                urllib.request.urlopen(urllib.request.Request(
+                    blob, data=_Relay(download, key, done, total), method="POST",
+                    headers={"Content-Length": str(f["bytes"])}), timeout=600).close()
+        done += f["bytes"]
+    request = {"model": model, "stream": False, "parameters": build["parameters"],
+               "files": {f["name"]: f"sha256:{f['sha256']}" for f in build["files"]},
+               "draft_files": {f["name"]: f"sha256:{f['sha256']}" for f in build.get("draft_files", [])}}
+    urllib.request.urlopen(urllib.request.Request(HOST + "/api/create", data=json.dumps(request).encode(),
+                                                  headers={"Content-Type": "application/json"}), timeout=600).close()
+    caps_cache.pop(model, None)
 
 
 def _download(key, url, path, size, done_before=0, total=None):
@@ -1792,7 +1865,8 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/chat":
             return self._chat(body)
         if url.path == "/api/pull":
-            started = start_job(f"model:{model}", friendly_name(model), pull_worker, model)
+            worker = build_worker if "build" in (catalog_entry(model) or {}) else pull_worker
+            started = start_job(f"model:{model}", friendly_name(model), worker, model)
             return self._send(200 if started else 409, {"ok": started})
         if url.path == "/api/library":
             pack = str(body.get("pack", ""))
