@@ -30,8 +30,11 @@ function showStale() {
   document.body.insertAdjacentHTML("afterbegin", `<div id="stale" class="banner" role="alert">Survival LLM was restarted.
     <button type="button" class="primary" onclick="location.reload()">Reload this page</button></div>`);
 }
-function remember(key, value) { try { localStorage.setItem(key, value); } catch { /* private window */ } }
-function recall(key) { try { return localStorage.getItem(key); } catch { return null; } }
+// Kept per settings folder: a dev copy's fresh profile (bin/dev --fresh) starts without the normal copy's choices.
+const profile = document.querySelector('meta[name="profile"]')?.content || "";
+const stored = (key) => (profile && !profile.startsWith("{{") ? `${profile}:${key}` : key);
+function remember(key, value) { try { localStorage.setItem(stored(key), value); } catch { /* private window */ } }
+function recall(key) { try { return localStorage.getItem(stored(key)); } catch { return null; } }
 function announce(text) { els.announce.textContent = ""; setTimeout(() => { els.announce.textContent = text; }, 50); }
 
 // Server-sent events from a POST response body (": tick" heartbeat lines are ignored).
@@ -134,6 +137,8 @@ async function loadStatus() {
   showModel();
   renderSetup();
   if (els.dialog.open) renderModels();
+  if (libraryDialog.open) renderLibrary();
+  renderReaderLibrary();
   els.libraryBtn.hidden = !state.library && !state.my_files?.ready;
   renderVersion();
   schedulePoll();
@@ -141,7 +146,7 @@ async function loadStatus() {
 
 function schedulePoll() {
   clearTimeout(pollTimer);
-  const quick = activeJobs().length || state?.warming.length || state?.ollama_starting || !state?.ollama;
+  const quick = activeJobs().length || state?.setup || state?.warming.length || state?.ollama_starting || !state?.ollama;
   pollTimer = setTimeout(loadStatus, quick ? 1500 : isReady() ? 15000 : 6000);
 }
 
@@ -151,18 +156,22 @@ function setStatus(kind, html) {
 
 function renderStatus() {
   const s = state;
-  if (!s.ollama) {
+  if (s.setup) {
+    setStatus("warn", `Setting up: ${setupSteps(s).pct}% downloaded`);
+  } else if (!s.ollama) {
     setStatus(s.ollama_installed ? "warn" : "off", s.ollama_installed
-      ? (s.ollama_starting ? "Starting the AI engine…" : "The AI engine (Ollama) isn't running")
+      ? (s.ollama_starting ? "Starting the AI engine…"
+        : `The AI engine (Ollama) isn't running · <button class="link" type="button" id="status-start">Start it</button>`)
       : "Setup not finished: the AI engine is needed");
   } else if (!s.models.length || !s.library) {
     const missing = [!s.models.length && "an AI model", !s.library && "the library"].filter(Boolean).join(" and ");
-    setStatus("warn", `<a href="#setup">Setup not finished: needs ${missing}</a>`);
+    setStatus("warn", s.library || s.models.length ? `Setup not finished: needs ${missing}` : "Not set up yet");
   } else if (s.warming.includes(currentModel)) {
     setStatus("warn", `Getting ${esc(nameOf(currentModel))} ready…`);
   } else {
     const mine = s.my_files?.ready ? ` + ${s.my_files.ready.toLocaleString()} of your files` : "";
-    setStatus("on", `Ready to use without internet · ${s.library.articles.toLocaleString()} articles${mine}`);
+    setStatus("on", `Ready to use without internet · <button class="link" type="button" id="status-library"
+      title="Switch libraries or move the library">${s.library.articles.toLocaleString()} articles</button>${mine}`);
   }
 }
 
@@ -276,9 +285,11 @@ function modelRows(container, { onlyFitting = false } = {}) {
 }
 
 function renderModels() {
+  const engine = state.engine?.running;
   els.modelsIntro.textContent = `This ${state.machine.os} computer has ${state.machine.ram_gb} GB of memory (RAM) and `
     + `${state.disk_free_gb} GB of free disk space. Bigger models know more but need more memory and are slower. `
-    + "Download while you have internet, and leave Survival LLM open until it finishes; an interrupted download picks up where it left off.";
+    + "Download while you have internet, and leave Survival LLM open until it finishes; an interrupted download picks up where it left off."
+    + (engine ? ` AI engine: Ollama ${engine.version}, ${engine.ours ? "built into Survival LLM" : "the Ollama app running on this computer"}.` : "");
   modelRows(els.modelsList);
 }
 function openModels() {
@@ -300,13 +311,260 @@ async function startLibraryDownload(pack) {
   loadStatus();
 }
 
-let doneJobs = new Set(), setupSig = "";
-function progressHTML(job, doing, label) {
+// Someone with an AI but no library: the app works, from the AI's memory; say why, and how to get the library.
+function renderLibraryMissing(setupShown) {
+  const s = state, note = $("library-missing");
+  const missing = !setupShown && s.models.length && !s.library;
+  note.hidden = !missing;
+  if (!missing) return;
+  const html = s.library_away
+    ? `The library isn't where it was: <code>${esc(s.library_dir)}</code>. If it's on a drive, plug the drive in.
+       <button class="link" type="button" id="missing-library">Library window</button>`
+    : `No library yet, so answers come from the AI's memory alone, with no sources to check.
+       <button class="link" type="button" id="missing-library">Get the library</button>`;
+  if (note.dataset.sig === html) return;
+  note.dataset.sig = html;
+  note.innerHTML = html;
+  $("missing-library").onclick = () => openLibrary();
+}
+
+// ---------- first-run setup: choose a library and an AI, then one download that finishes on its own ----------
+const TYPICAL_SPEED = 50e6 / 8;  // bytes a second on typical home internet (50 Mb/s), for estimates before it starts
+const busyJob = (job) => job && ["starting", "downloading", "unpacking"].includes(job.status);
+const bare = (model) => (model || "").replace(/:latest$/, "");
+const hasModel = (model) => !!model && state.models.some((m) => bare(m.model) === bare(model));
+const cap = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+const gbText = (bytes) => `${(bytes / 1e9).toFixed(1)} GB`;
+const speedText = (bytesPerSecond) => {  // in megabits a second (Mb/s), like internet plans
+  const mbits = (bytesPerSecond * 8) / 1e6;
+  return `${mbits >= 10 ? Math.round(mbits) : mbits.toFixed(1)} Mb/s`;
+};
+let doneJobs = new Set(), setupSig = "", sawSetup = false;
+let armedKey = "", armedUntil = 0;  // a button waiting for its second click, kept while the screen redraws
+const isArmed = (key) => armedKey === key && Date.now() < armedUntil;
+function arm(key, redraw) {
+  armedKey = key;
+  armedUntil = Date.now() + 5000;
+  redraw();
+  setTimeout(redraw, 5100);  // back to its own label
+}
+let packNames = {};                         // pack id -> what the setup screen showed for it
+let choice = { pack: null, model: null };   // what is picked on the setup screen
+let needs = { library: false, ai: false };  // what the setup screen offers to download
+let moreModels = false;                     // "Other AI models" is open
+
+function progressHTML(job, doing, label) {  // the Updates window's downloads
   const pct = job.total ? Math.round((job.completed / job.total) * 100) : 0;
   return `<p>${job.status === "unpacking" ? "Unpacking… (a few minutes)" : doing}</p>
     <progress max="100" value="${pct}" aria-label="${label}"></progress>
     <p class="meta">${job.total ? `${(job.completed / 1e9).toFixed(1)} of ${(job.total / 1e9).toFixed(1)} GB · ` : ""}Leave Survival LLM open until it finishes. If it gets interrupted, start it again and it picks up where it left off.</p>`;
 }
+function sizeText(gb) { return `${gb >= 10 ? Math.round(gb) : (+gb).toFixed(1)} GB`; }
+function timeText(seconds) {
+  let minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 2) return "about a minute";
+  if (minutes < 60) return `about ${minutes} minutes`;
+  let hours = Math.floor(minutes / 60);
+  minutes = Math.round((minutes % 60) / 10) * 10;
+  if (minutes === 60) { hours += 1; minutes = 0; }
+  const h = `${hours} hour${hours > 1 ? "s" : ""}`;
+  return hours >= 3 || !minutes ? `about ${h}` : `about ${h} ${minutes} minutes`;
+}
+function option(name, value, checked, enabled, body) {
+  return `<label class="ob-option${checked ? " on" : ""}${enabled ? "" : " unfit"}">
+    <input type="radio" name="ob-${name}" value="${esc(value)}"${checked ? " checked" : ""}${enabled ? "" : " disabled"}>
+    <span class="ob-main">${body}</span></label>`;
+}
+function part(num, title, why, body, done = false) {
+  return `<section class="ob-part${done ? " done" : ""}"><h3><span class="num">${done ? "✓" : num}</span>${title}</h3>
+    ${why ? `<p class="ob-why">${why}</p>` : ""}${body}</section>`;
+}
+
+// The AI models to offer: the ones that fit this computer, the best one first. If none fits, the smallest, as slow.
+function setupModels(s) {
+  const rows = s.catalog.map((c) => ({ ...c, pickable: c.installed || (c.fits && c.fits_disk) }));
+  if (rows.length && !rows.some((r) => r.pickable)) {
+    const small = rows.reduce((a, b) => (b.gb < a.gb ? b : a));
+    if (small.fits_disk) Object.assign(small, { pickable: true, slow: true });
+  }
+  return rows;
+}
+
+function chooseView(s) {
+  const packs = s.packs || [], models = setupModels(s);
+  const aiUnknown = !s.ollama && s.ollama_installed;  // its engine is starting: which models it has isn't known yet
+  needs = { library: !s.library, ai: !aiUnknown && !s.models.length };
+  if (needs.library && !packs.some((p) => p.id === choice.pack)) choice.pack = (packs.find((p) => p.id === "lite") || packs[0])?.id || null;
+  if (needs.ai && !models.some((m) => m.model === choice.model && m.pickable)) {
+    choice.model = (models.find((m) => m.recommended && m.pickable) || models.find((m) => m.pickable))?.model || null;
+  }
+  const pack = needs.library ? packs.find((p) => p.id === choice.pack) : null;
+  const model = needs.ai ? models.find((m) => m.model === choice.model && m.pickable) : null;
+  const engineGB = needs.ai && !s.ollama_installed && s.engine?.downloadable ? s.engine.gb : 0;
+  const modelGB = model && !model.installed ? model.gb : 0;
+  const downloadGB = (pack?.gb || 0) + modelGB + engineGB;
+  const diskGB = Math.ceil((pack?.disk_gb || 0) + modelGB + engineGB * 2.5 + 5);  // 5: room to spare afterwards
+
+  let lib;
+  if (!needs.library) lib = `<p class="ob-done">Already on this computer: ${s.library.articles.toLocaleString()} articles.</p>`;
+  else if (packs.length) {
+    lib = packs.map((p) => {
+      const fits = p.disk_gb + 5 <= s.disk_free_gb;
+      return option("pack", p.id, p.id === choice.pack, fits, `<span class="ob-name">${esc(p.name)}</span>
+        <span class="ob-size">${sizeText(p.gb)}</span>
+        <span class="ob-about">${esc(p.about)}.${p.articles ? ` ${p.articles.toLocaleString()} articles.` : ""}</span>
+        <span class="ob-meta">${fits ? `${cap(timeText((p.gb * 1e9) / TYPICAL_SPEED))} to download · needs ${p.disk_gb} GB free while it installs`
+          : `Needs ${p.disk_gb + 5} GB of free disk space; this computer has ${s.disk_free_gb} GB`}</span>`);
+    }).join("");
+  } else {
+    lib = s.packs_error === "unavailable"
+      ? `<p>The list of libraries isn't available right now (the download site answered, but without it). It checks again every minute.</p>`
+      : s.packs_error === "offline"
+      ? `<p>Connect to the internet to download the library; this page notices on its own when you're online. If you have a
+        library folder already (from a USB stick, say), choose it with Keep it somewhere else below.</p>`
+      : `<p class="meta">Getting the list of libraries…</p>`;
+  }
+
+  let ai;
+  if (aiUnknown) {
+    ai = s.ollama_starting ? `<p class="meta">Getting the AI engine ready… (a few seconds)</p>`
+      : `<p>The AI engine didn't start. <button class="ghost" type="button" id="start-ollama">Start it again</button></p>`;
+  } else if (!needs.ai) {
+    ai = `<p class="ob-done">Already on this computer: ${esc(nameOf(currentModel || s.models[0].model))}. You can change it any time with Model at the top.</p>`;
+  } else {
+    const modelOption = (m) => {
+      const why = m.slow ? `Needs ${m.min_ram} GB of memory and this computer has ${s.machine.ram_gb} GB, so answers will be slow`
+        : !m.fits ? `Needs ${m.min_ram} GB of memory (RAM); this computer has ${s.machine.ram_gb} GB`
+        : !m.fits_disk && !m.installed ? `Needs ${m.gb + 5} GB of free disk space; this computer has ${s.disk_free_gb} GB`
+        : m.installed ? "Already on this computer" : `${cap(timeText((m.gb * 1e9) / TYPICAL_SPEED))} to download`
+          + (m.preview_cached ? " (seconds in this preview: it's on this Mac)" : "");
+      return option("model", m.model, m.model === choice.model && m.pickable, m.pickable, `<span class="ob-name">${esc(m.name)}</span>
+        <span class="ob-size">${m.installed ? "" : sizeText(m.gb)}</span>${m.recommended ? ' <span class="badge">Best for this computer</span>' : ""}
+        <span class="ob-about">${esc(m.blurb)}</span>
+        <span class="ob-meta">${why} · by ${esc(m.maker)}</span>`);
+    };
+    // The best one for this computer, and the rest folded away (the ones that fit first), so the choice is easy.
+    const best = models.find((m) => m.recommended && m.pickable) || models.find((m) => m.pickable);
+    const others = [...models.filter((m) => m !== best && m.pickable), ...models.filter((m) => !m.pickable)];
+    const open = moreModels || (best && choice.model !== best.model);
+    ai = (best ? modelOption(best) : `<p class="error">None of the AI models fits on this computer
+        (${s.machine.ram_gb} GB of memory, ${s.disk_free_gb} GB of free disk space). You can still download the library and
+        search it yourself.</p>`)
+      + (others.length ? `<details class="ob-more" id="ob-more"${open ? " open" : ""}><summary>${best ? "Other AI models" : "The AI models"}
+          (${others.length})</summary>${others.map(modelOption).join("")}</details>` : "");
+    if (!s.ollama_installed && !s.engine?.downloadable) {
+      ai = `<p>Survival LLM uses the free Ollama app to run the AI on this computer. Install it while you have internet:
+        <a href="https://ollama.com/download" target="_blank" rel="noopener">ollama.com/download</a>. Setup carries on by
+        itself once Ollama is running.</p>` + ai;
+    } else if (engineGB) {
+      ai += `<p class="meta">Includes the AI engine that runs it on this computer (${sizeText(engineGB)}).</p>`;
+    }
+  }
+
+  const waitEngine = aiUnknown && s.ollama_starting;
+  const tooBig = downloadGB > 0 && diskGB > s.disk_free_gb;
+  const ready = downloadGB > 0 && !tooBig && !waitEngine;  // either half alone, when the other can't be had
+  const label = waitEngine ? "Getting ready…" : downloadGB ? `Download ${sizeText(downloadGB)}` : "Download";
+  const note = tooBig
+    ? `<p class="error">That needs about ${diskGB} GB of free disk space while it installs, and this computer has
+        ${s.disk_free_gb} GB. Pick ${needs.library && pack?.id !== "lite" ? "Essentials or " : ""}a smaller AI, or free up some space.</p>`
+    : downloadGB ? `<p class="meta"><strong>${cap(timeText((downloadGB * 1e9) / TYPICAL_SPEED))}</strong> on typical home
+        internet (50 Mb/s). It keeps going if the internet drops or the computer sleeps.</p>` : "";
+  if (needs.library) {
+    lib += `<p class="ob-where meta">It will be kept in <code>${esc(s.library_dir)}</code>.
+      <button class="link" type="button" id="ob-where">Keep it somewhere else</button></p>`;
+  }
+  return `<div class="ob-hero"><h1>Set up Survival LLM</h1>
+      <p>Survival LLM is an AI that runs on this computer. It answers from an offline library of medical, emergency and
+        how-to articles, and shows you where each answer came from. Download both once, while you have internet; after
+        that it works with none. If you quit halfway, it picks up where it left off the next time you open it.</p></div>
+    ${part(1, "The library", needs.library ? "What the AI looks things up in. You can read it yourself, too." : "", lib, !needs.library)}
+    ${part(2, "The AI", needs.ai ? "Runs on this computer and writes the answers. Bigger ones know more and make fewer mistakes." : "",
+      ai, !needs.ai && !aiUnknown)}
+    ${downloadGB || waitEngine ? `<div class="ob-go"><button class="primary big" type="button" id="ob-start"${ready ? "" : " disabled"}>${label}</button>${note}</div>` : ""}`;
+}
+
+// The setup's downloads, in order, with how far along each is.
+function setupSteps(s) {
+  const st = s.setup, steps = [];
+  if (st.pack) {
+    steps.push({ kind: "library", name: `Library: ${esc(packNames[st.pack]?.name || st.pack)}`, gb: packNames[st.pack]?.gb || 0,
+      done: !!s.library && (!s.library.pack || s.library.pack === st.pack), job: jobFor(`library:${st.pack}`) });
+  }
+  if (st.model) {
+    const engine = jobFor("engine");
+    if (engine || (!s.ollama_installed && s.engine?.downloadable)) {
+      steps.push({ kind: "engine", name: "AI engine", gb: s.engine?.gb || 0, done: s.ollama_installed, job: engine });
+    }
+    const entry = s.catalog.find((c) => bare(c.model) === bare(st.model));
+    steps.push({ kind: "model", name: `AI: ${esc(entry?.name || nameOf(st.model))}`, gb: entry?.gb || 0,
+      done: hasModel(st.model), job: jobFor(`model:${st.model}`), cached: !!entry?.preview_cached });
+  }
+  let total = 0, done = 0, rate = 0, waiting = 0;  // waiting: bytes still to download, for the time left
+  for (const step of steps) {
+    step.bytes = step.job?.total || step.gb * 1e9;
+    total += step.bytes;
+    if (step.done) { done += step.bytes; continue; }
+    const have = busyJob(step.job) ? step.job.completed : 0;
+    if (busyJob(step.job)) { done += have; rate = step.job.rate || 0; step.active = true; }
+    step.left = step.bytes - have;
+    if (!step.cached) waiting += step.left;
+  }
+  return { steps, total, done, rate, waiting, pct: total ? Math.min(100, Math.floor((done / total) * 100)) : 0 };
+}
+
+function stepLine(s, step, first, rate) {
+  const st = s.setup, job = step.job, here = st.step === step.kind || (st.step === "wait" && step.kind === "model");
+  let icon = "", text;
+  if (step.done) {
+    icon = "✓";
+    text = step.kind === "library" && s.library
+      ? `Ready: ${s.library.articles.toLocaleString()} articles. <button class="link" type="button" id="ob-search">Search it now</button>`
+      : "Ready.";
+  } else if (job?.status === "unpacking") {
+    text = "Unpacking… (a few minutes)";
+  } else if (busyJob(job)) {
+    text = job.total ? `${gbText(job.completed)} of ${gbText(job.total)}${rate > 0 && !step.cached ? ` · ${timeText(step.left / rate)} left` : ""}`
+      : "Starting…";
+  } else if (here && st.waiting === "retry") {
+    text = `${esc(st.error || "The download stopped.")} Trying again in ${st.retry_in} s.
+      <button class="link" type="button" id="ob-retry">Try now</button>`;
+  } else if (here && st.waiting === "stuck") {
+    text = `<span class="error">${esc(st.error || "The download stopped.")}</span>
+      <button class="ghost" type="button" id="ob-retry">Try again</button>`;
+  } else if (step.kind === "model" && st.waiting === "engine-starting") {
+    text = "Starting the AI engine…";
+  } else if (step.kind === "model" && st.waiting === "install-engine") {
+    text = `Install the free Ollama app to run it: <a href="https://ollama.com/download" target="_blank" rel="noopener">ollama.com/download</a>.
+      Setup carries on by itself once Ollama is running.`;
+  } else {
+    text = `<span class="meta">${first ? "Starting…" : rate > 0 && !step.cached ? `Next: ${gbText(step.left)}, ${timeText(step.left / rate)}` : "Next"}</span>`;
+  }
+  if (step.cached && !step.done) text += ` <span class="meta">(on this Mac already, so in this preview it takes seconds)</span>`;
+  const cls = step.done ? "done" : busyJob(job) ? "active" : here && st.waiting ? "problem" : "";
+  return `<li class="${cls}"><span class="ob-icon" aria-hidden="true">${icon}</span><span><strong>${step.name}</strong> · ${text}</span></li>`;
+}
+
+function progressView(s) {
+  const p = setupSteps(s);
+  const left = p.rate > 0 && p.waiting > 0 ? ` · ${timeText(p.waiting / p.rate)} left in all` : "";
+  const speed = p.rate > 0 ? ` · <span title="Download speed in megabits a second, the unit internet plans use">${speedText(p.rate)}</span>` : "";
+  const library = p.steps.find((x) => x.kind === "library");
+  const firstOpen = p.steps.find((x) => !x.done);
+  const tip = library?.done && p.steps.some((x) => x.kind === "model" && !x.done)
+    ? `<p class="ob-tip">The library is ready, so you can already search it yourself while the AI downloads.</p>` : "";
+  return `<div class="ob-hero"><h1>Setting up Survival LLM</h1></div>
+    <section class="ob-part">
+      <progress max="100" value="${p.pct}" aria-label="Setup download, ${p.pct}%"></progress>
+      <p class="ob-total"><strong>${p.pct}%</strong> · ${gbText(p.done)} of ${gbText(p.total)}${speed}${left}</p>
+      <ul class="ob-steps">${p.steps.map((x) => stepLine(s, x, x === firstOpen, p.rate)).join("")}</ul>
+    </section>
+    ${tip}
+    <p class="meta ob-foot">Leave Survival LLM open, with the computer plugged in if you can. If the internet drops or the
+      computer sleeps, it carries on by itself; if you quit, it picks up where it left off the next time you open it.
+      <button class="link" type="button" id="ob-change">${isArmed("change") ? "Click again to stop the download and choose again" : "Change what to download"}</button></p>`;
+}
+
 function renderSetup() {
   const s = state;
   // A model that just finished downloading becomes the one in use if nothing is selected yet.
@@ -316,77 +574,185 @@ function renderSetup() {
     const model = job.key.slice(6).replace(/:latest$/, "");
     if (!currentModel && s.models.some((m) => m.model === model)) selectModel(model);
   }
-  const hasModel = s.models.length > 0;
-  const steps = [];
-  let step1;
-  const engineJob = jobFor("engine");
-  const engineBusy = engineJob && ["starting", "downloading", "unpacking"].includes(engineJob.status);
-  if (s.ollama) step1 = "<p>Running.</p>";
-  else if (engineBusy) step1 = progressHTML(engineJob, "Downloading the AI engine", "AI engine download");
-  else if (s.ollama_installed) step1 = `<p>${s.ollama_starting ? "Starting the AI engine… (this takes a few seconds)" : "The AI engine isn't running."}</p>
-    <button class="ghost" type="button" id="start-ollama">Start it</button>`;
-  else if (s.engine?.downloadable) step1 = `<p>The AI engine (Ollama, free and open source) runs the model on this computer. It's a
-    one-time ${s.engine.gb} GB download, and nothing else to install.</p>
-    ${engineJob?.status === "error" ? `<p class="error">${esc(engineJob.error)}</p>` : ""}
-    <button class="primary" type="button" id="get-engine">Download the AI engine (${s.engine.gb} GB)</button>`;
-  else step1 = `<p>Survival LLM uses the free Ollama app to run the AI on this computer. Install it while you have internet:
-    <a href="https://ollama.com/download" target="_blank" rel="noopener">ollama.com/download</a>. You don't need Ollama's own
-    window; it just has to be running. This page notices on its own when it is.</p>`;
-  steps.push(`<div class="step ${s.ollama ? "done" : ""}"><h3><span class="num">${s.ollama ? "✓" : "1"}</span>AI engine</h3>${step1}</div>`);
-  if (s.ollama) {
-    const fitting = s.catalog.filter((c) => c.fits && c.fits_disk);
-    let modelStep;
-    if (hasModel) modelStep = `<p>Using ${esc(nameOf(currentModel))}. You can change it any time with Model at the top.</p>`;
-    else if (fitting.length) modelStep = `<p>Pick one for this ${esc(s.machine.os)} computer (${s.machine.ram_gb} GB of memory,
-      ${s.disk_free_gb} GB free disk). The recommended one is the smartest that fits.</p><div id="setup-models"></div>`;
-    else {
-      const small = s.catalog.reduce((a, b) => (b.gb < a.gb ? b : a));
-      modelStep = `<p>This computer has ${s.machine.ram_gb} GB of memory and ${s.disk_free_gb} GB free disk; even the smallest model
-        (${esc(small.name)}) wants ${small.min_ram} GB of memory and ${small.gb + 5} GB of disk. You can try it anyway (answers will be
-        slow), or use Search library without the AI.</p>
-        <button class="ghost" type="button" id="try-anyway">Try ${esc(small.name)} anyway (${small.gb} GB)</button>`;
-    }
-    steps.push(`<div class="step ${hasModel ? "done" : ""}"><h3><span class="num">${hasModel ? "✓" : "2"}</span>AI model</h3>${modelStep}</div>`);
-    let libStep;
-    if (s.library) libStep = `<p>Installed: ${s.library.articles.toLocaleString()} articles.</p>`;
-    else {
-      const jobs = (s.packs || []).map((p) => jobFor(`library:${p.id}`)).filter(Boolean);
-      const active = jobs.find((j) => ["starting", "downloading", "unpacking"].includes(j.status));
-      const failed = jobs.find((j) => j.status === "error");
-      if (active) libStep = progressHTML(active, `Downloading ${esc(active.label)}`, "Library download");
-      else if (s.packs?.length) {
-        libStep = `<p>The articles the AI looks things up in. Without it, answers come only from the model's memory, with no sources
-          to check. Pick one:</p>${failed ? `<p class="error">${esc(failed.error)}</p>` : ""}
-          <div class="pack-row">${s.packs.map((p) => `<button class="ghost pack" type="button" data-pack="${esc(p.id)}">${esc(p.label)}</button>`).join("")}</div>`;
-      } else {
-        libStep = s.packs_error === "unavailable"
-          ? `<p>The list of library downloads isn't available right now (the download site answered, but without it). Try again
-            later; it checks again every minute.</p>`
-          : `<p>Couldn't reach the list of library downloads (no internet?). Connect, and it will appear here; or put a library
-            folder at ${esc(s.library_dir)}.</p>`;
-      }
-    }
-    steps.push(`<div class="step ${s.library ? "done" : ""}"><h3><span class="num">${s.library ? "✓" : "3"}</span>Offline library</h3>${libStep}</div>`);
+  for (const p of s.packs || []) packNames[p.id] = p;
+  // The setup screen is for someone with no AI yet, or while setup runs. Not while the engine is only starting for
+  // someone who has a library (an existing user, whose models aren't known yet); and someone with an AI but no
+  // library (a download never finished, or the library is on a drive that's unplugged) gets the app with a note.
+  const engineStarting = !s.ollama && s.ollama_installed;
+  const show = !!s.setup || (!s.models.length && !(engineStarting && s.library));
+  const firstRun = show && !s.models.length;  // nothing to chat with yet: no toolbar or question box
+  const chatting = !!els.messages.querySelector(".msg");
+  if (s.setup) sawSetup = true;
+  document.body.classList.toggle("onboarding", firstRun);
+  els.setup.hidden = !show;
+  els.setup.classList.toggle("compact", show && chatting);
+  els.welcome.hidden = show || chatting;
+  renderLibraryMissing(show);
+  const libraryNote = s.models.length && !s.library && chatting  // before a chat, the note at the top says it
+    ? "The library isn't downloaded yet, so answers come from the AI's memory alone, with no sources to check." : "";
+  if (libraryNote || els.composerNote.dataset.setup) {
+    els.composerNote.textContent = libraryNote;
+    els.composerNote.hidden = !libraryNote;
+    if (libraryNote) els.composerNote.dataset.setup = "1"; else delete els.composerNote.dataset.setup;
   }
-  const needsSetup = !isReady();
-  els.setup.hidden = !needsSetup;
-  if (!needsSetup) { els.setup.innerHTML = ""; setupSig = ""; return; }
-  const html = `<h2 class="setup-title">Set up Survival LLM</h2>
-    <p class="meta">Do this while you have internet. Afterwards everything works without it.</p>` + steps.join("");
-  const sig = html + JSON.stringify([s.catalog, s.downloads, s.models, currentModel]);
-  if (sig === setupSig) return;  // rebuilding an unchanged card would knock keyboard focus off its buttons
-  setupSig = sig;
-  const focusedId = document.activeElement?.id, focusedPack = document.activeElement?.dataset?.pack;
+  if (!show) {
+    if (sawSetup && isReady()) {  // a setup this page watched just finished
+      $("ready-note").hidden = false;
+      announce("Setup is done. Survival LLM now works without internet.");
+      sawSetup = false;
+    }
+    setupSig = ""; els.setup.innerHTML = "";
+    return;
+  }
+  const html = s.setup ? progressView(s) : chooseView(s);
+  if (html === setupSig) return;  // rebuilding an unchanged screen would knock keyboard focus off its buttons
+  setupSig = html;
+  const focused = document.activeElement;
+  const focusedId = focused?.id, focusedRadio = focused?.name?.startsWith("ob-") ? [focused.name, focused.value] : null;
   els.setup.innerHTML = html;
+  for (const r of els.setup.querySelectorAll('input[name="ob-pack"]')) r.onchange = () => { choice.pack = r.value; renderSetup(); };
+  for (const r of els.setup.querySelectorAll('input[name="ob-model"]')) r.onchange = () => { choice.model = r.value; renderSetup(); };
+  if ($("ob-start")) $("ob-start").onclick = startSetup;
+  if ($("ob-more")) $("ob-more").ontoggle = (e) => { moreModels = e.currentTarget.open; };
+  if ($("ob-retry")) $("ob-retry").onclick = () => api("/api/setup/retry", { method: "POST", body: "{}" }).then(loadStatus);
+  if ($("ob-change")) {
+    $("ob-change").onclick = () => {
+      if (isArmed("change")) { armedKey = ""; changeSetup(); } else arm("change", () => { setupSig = ""; renderSetup(); });
+    };
+  }
+  if ($("ob-search")) $("ob-search").onclick = () => { showReader($("ob-search")); els.search.focus(); };
   if ($("start-ollama")) $("start-ollama").onclick = () => api("/api/start-ollama", { method: "POST", body: "{}" }).then(loadStatus);
-  if ($("get-engine")) $("get-engine").onclick = () => api("/api/engine", { method: "POST", body: "{}" }).then(loadStatus);
-  if ($("try-anyway")) $("try-anyway").onclick = () => startModelDownload(s.catalog.reduce((a, b) => (b.gb < a.gb ? b : a)));
-  const box = $("setup-models");
-  if (box) modelRows(box, { onlyFitting: true });
-  for (const b of els.setup.querySelectorAll(".pack")) b.onclick = () => startLibraryDownload(b.dataset.pack);
+  if ($("ob-where")) $("ob-where").onclick = () => moveLibrary();
   if (focusedId && $(focusedId)) $(focusedId).focus();
-  if (focusedPack) els.setup.querySelector(`.pack[data-pack="${CSS.escape(focusedPack)}"]`)?.focus();
+  else if (focusedRadio) els.setup.querySelector(`input[name="${focusedRadio[0]}"][value="${CSS.escape(focusedRadio[1])}"]`)?.focus();
 }
+
+async function startSetup(e) {
+  e.currentTarget.disabled = true;
+  const body = { pack: needs.library ? choice.pack : null, model: needs.ai ? choice.model : null };
+  try {
+    const resp = await api("/api/setup", { method: "POST", body: JSON.stringify(body) });
+    if (!resp.ok) announce((await resp.json().catch(() => ({}))).error || "Couldn't start the download.");
+    else announce("Downloading. This page shows how far along it is.");
+  } catch { /* the status poll shows any problem */ }
+  loadStatus();
+}
+
+async function changeSetup() {
+  try { await api("/api/setup/cancel", { method: "POST", body: "{}" }); } catch { /* shown via status */ }
+  setupSig = "";
+  loadStatus();
+}
+
+// ---------- the Library window: which pack is installed, the other one, and where it's kept (#4, #9) ----------
+const libraryDialog = $("library-dialog");
+let librarySig = "", libraryNote = null;  // libraryNote: {text, error} about the last move
+const packName = (id) => packNames[id]?.name || { lite: "Essentials", full: "Everything" }[id] || id;
+
+function openLibrary(keepNote = false) {
+  if (!state) return;
+  if (keepNote !== true) libraryNote = null;
+  librarySig = "";
+  renderLibrary();
+  if (!libraryDialog.open) libraryDialog.showModal();
+}
+
+function renderLibrary() {
+  const s = state, lib = s.library, move = jobFor("library-move");
+  const otherBusy = activeJobs().some((j) => j.key.startsWith("library:") || j.key === "library-move");
+  let html = lib
+    ? `<h3>${lib.pack ? `${esc(packName(lib.pack))} is installed` : "Your library"}</h3>
+       <p>${lib.articles.toLocaleString()} articles from ${lib.sources} sources.</p>`
+    : `<h3>No library yet</h3><p>Pick one below. Until then the AI answers from its memory alone, with no sources to check.</p>`;
+  html += `<p class="meta">Kept in <code>${esc(s.library_dir)}</code></p>`;
+  if (busyJob(move)) {
+    html += progressHTML(move, "Moving the library to the new folder…", "Library move");
+  } else {
+    if (move?.status === "error") html += `<p class="error">${esc(move.error)}</p>`;
+    if (libraryNote) html += `<p class="${libraryNote.error ? "error" : "meta"}">${esc(libraryNote.text)}</p>`;
+    html += `<p class="lib-actions">${lib ? `<button class="ghost" type="button" id="lib-show">Show the folder</button> ` : ""}
+      <button class="ghost" type="button" id="lib-move"${otherBusy ? " disabled" : ""}>${lib ? "Move it…" : "Keep it somewhere else…"}</button></p>
+      <p class="meta">${lib ? "Move it to another folder or an external drive. If that folder already holds a library, Survival LLM uses that one instead." : "Pick where the library goes before you download it, an external drive for instance."}</p>`;
+  }
+  const others = (s.packs || []).filter((p) => p.id !== lib?.pack);
+  for (const p of others) {
+    const job = jobFor(`library:${p.id}`), fits = p.disk_gb + 5 <= s.disk_free_gb;
+    html += `<h3>${lib ? "Switch to" : "Download"} ${esc(p.name)}</h3>
+      <p>${esc(p.about)}.${p.articles ? ` ${p.articles.toLocaleString()} articles.` : ""}</p>`;
+    if (busyJob(job)) {
+      html += progressHTML(job, `Downloading ${esc(p.name)}`, `${p.name} download`);
+    } else {
+      html += `${job?.status === "error" ? `<p class="error">${esc(job.error)}</p>` : ""}
+        <p class="meta">${sizeText(p.gb)} download, ${timeText((p.gb * 1e9) / TYPICAL_SPEED)} on typical home internet. Needs
+          ${p.disk_gb} GB free while it installs; this computer has ${s.disk_free_gb} GB.${lib ? " Your current library keeps working until the new one is ready, then the new one replaces it." : ""}</p>
+        <button class="${lib ? "ghost" : "primary"}" type="button" data-pack="${esc(p.id)}"${fits && !otherBusy ? "" : " disabled"}>
+          ${isArmed(`switch:${p.id}`) ? "Click again to download it" : `${lib ? "Switch to" : "Download"} ${esc(p.name)} (${sizeText(p.gb)})`}</button>`;
+    }
+  }
+  if (!(s.packs || []).length) {
+    html += `<p class="meta">${s.packs_error === "offline" ? "Connect to the internet to see the libraries you can download."
+      : s.packs_error === "unavailable" ? "The list of libraries isn't available right now. It checks again every minute."
+      : "Getting the list of libraries…"}</p>`;
+  }
+  if (html === librarySig) return;  // rebuilding an unchanged window would knock keyboard focus off its buttons
+  librarySig = html;
+  const focusedId = document.activeElement?.id;
+  $("library-body").innerHTML = html;
+  if ($("lib-show")) $("lib-show").onclick = () => api("/api/library/open", { method: "POST", body: "{}" }).catch(() => {});
+  if ($("lib-move")) $("lib-move").onclick = () => moveLibrary();
+  for (const b of $("library-body").querySelectorAll("button[data-pack]")) {
+    const key = `switch:${b.dataset.pack}`;
+    b.onclick = () => {
+      if (!state.library || isArmed(key)) { armedKey = ""; startLibraryDownload(b.dataset.pack); }
+      else arm(key, () => { librarySig = ""; renderLibrary(); });
+    };
+  }
+  if (focusedId && $(focusedId)) $(focusedId).focus();
+}
+
+function renderReaderLibrary() {
+  const lib = state?.library, line = $("reader-lib");
+  line.hidden = !lib;
+  if (!lib) return;
+  const html = `${lib.pack ? esc(packName(lib.pack)) : "Library"}: ${lib.articles.toLocaleString()} articles ·
+    <button class="link" type="button" id="reader-manage">Switch or move the library</button>`;
+  if (line.dataset.sig === html) return;
+  line.dataset.sig = html;
+  line.innerHTML = html;
+  $("reader-manage").onclick = () => openLibrary();
+}
+
+// The system's folder dialog; in a browser (no app window), a plain text box instead.
+async function chooseFolder(start, question) {
+  try {
+    const resp = await api("/api/pick-folder", { method: "POST", body: JSON.stringify({ start }) });
+    if (resp.status === 501) return window.prompt(question, start || "")?.trim() || null;
+    return resp.ok ? (await resp.json()).path : null;
+  } catch { return null; }
+}
+
+async function moveLibrary() {
+  const folder = await chooseFolder(state.library_dir, "Which folder should the library go in?");
+  if (!folder) return;
+  libraryNote = null;
+  try {
+    const resp = await api("/api/library/move", { method: "POST", body: JSON.stringify({ folder }) });
+    const out = await resp.json().catch(() => ({}));
+    if (!resp.ok) libraryNote = { text: out.error || "Couldn't move the library.", error: true };
+    else if (out.existing) libraryNote = { text: "That folder already had a library, so Survival LLM uses it now." };
+    else if (out.same) libraryNote = { text: "The library is already there." };
+  } catch { return; }
+  librarySig = setupSig = "";
+  await loadStatus();
+  if (libraryNote) { announce(libraryNote.text); if (!libraryDialog.open && libraryNote.error) openLibrary(true); }
+}
+
+$("close-library").onclick = () => libraryDialog.close();
+libraryDialog.onclick = (e) => { if (e.target === libraryDialog) libraryDialog.close(); };
+els.status.addEventListener("click", (e) => {
+  if (e.target.id === "status-library") openLibrary();
+  if (e.target.id === "status-start") api("/api/start-ollama", { method: "POST", body: "{}" }).then(loadStatus).catch(() => {});
+});
 
 // ---------- chat ----------
 function addMessage(role, html) {
@@ -426,7 +792,7 @@ function sourceButton(source, how, strong) {
 function needModel(text) {  // keep the question in the box so it can be sent once a model is ready
   els.input.value = text;
   autosize();
-  els.composerNote.textContent = "Download an AI model first (step 2 of the setup above). Your question will wait here.";
+  els.composerNote.textContent = "Download an AI first (in the setup above). Your question will wait here.";
   els.composerNote.hidden = false;
   announce(els.composerNote.textContent);
   els.setup.scrollIntoView({ behavior: "smooth" });
@@ -449,7 +815,7 @@ async function ask(text) {
   const how = msg.querySelector(".how"), summary = how.querySelector("summary"), activity = how.querySelector(".activity");
   const answerEl = msg.querySelector(".answer"), meta = msg.querySelector(".meta"), sourcesEl = msg.querySelector(".sources");
   const started = Date.now();
-  let answer = "", queued = false, steps = 0, failed = false, answered = false, stopped = false;
+  let answer = "", queued = false, steps = 0, failed = false, answered = false, stopped = false, unfinished = false;
   let thought = null, thoughts = 0, thoughtMs = 0, thinkSetting;  // thought: the stretch of reasoning streaming in now
   const remembered = msg.querySelector(".remembered"), changes = [];  // memory changes, announced together at the end
   const tick = setInterval(() => {
@@ -471,9 +837,10 @@ async function ask(text) {
   const duration = (ms) => `${Math.max(1, Math.round(ms / 1000))} s`;
   const reasonStatus = (final) => {
     const who = nameOf(model);  // one title while it works (switching with each thought read as jumpy)
-    const until = answered ? "before it answered" : stopped ? "before you stopped it" : "so far";
+    // An unfinished answer (it never wrote one) gets no "before it answered".
+    const until = answered && !unfinished ? " before it answered" : stopped ? " before you stopped it" : answered ? "" : " so far";
     reasonHead.textContent = !final ? (thoughts ? `${who}'s reasoning so far` : "No reasoning yet.")
-      : thoughts ? `${who}'s reasoning ${until} · ${duration(thoughtMs)} of thinking`
+      : thoughts ? `${who}'s reasoning${until} · ${duration(thoughtMs)} of thinking`
       : thinkSetting === false ? `${who} answered without reasoning first, because Reasoning is set to Off. Set it to Short or more before you ask, and it thinks first.`
       : thinkSetting === null ? `${who} doesn't reason before it answers, so there's nothing to show.`
       : "No reasoning to show for this answer.";
@@ -577,6 +944,7 @@ async function ask(text) {
         meta.classList.add("error");
       } else if (ev.type === "done") {
         answered = true;  // a memory step may still follow
+        unfinished = !!ev.unfinished;
         thinkSetting = ev.think;  // whether it was asked to reason first, for when it didn't
         reasonStatus(true);  // its reasoning for the answer is complete (the memory step's isn't shown)
         answer = ev.unfinished ? ev.answer || "" : ev.answer || answer;  // unfinished: what streamed isn't an answer
@@ -931,6 +1299,18 @@ filesDialog.addEventListener("close", () => clearTimeout(filesTimer));
 $("choose-files").onclick = () => $("file-input").click();
 $("file-input").onchange = (e) => { addFiles(e.target.files); e.target.value = ""; };
 $("open-folder").onclick = () => api("/api/myfiles/open", { method: "POST", body: "{}" }).catch(() => {});
+$("files-move").onclick = async () => {
+  const folder = await chooseFolder(myFiles?.folder || state?.files_dir, "Which folder are your files in?");
+  if (!folder) return;
+  const resp = await api("/api/myfiles/folder", { method: "POST", body: JSON.stringify({ folder }) }).catch(() => null);
+  const out = resp ? await resp.json().catch(() => ({})) : {};
+  $("files-move-status").textContent = !resp ? "" : resp.ok
+    ? "Survival LLM now searches the files in that folder. The files in the old folder stay where they were."
+    : out.error || "Couldn't use that folder.";
+  $("files-move-status").className = resp && !resp.ok ? "error" : "meta";
+  filesSig = "";
+  refreshFiles(true);
+};
 $("ask-replace").onclick = () => answerAsk("replace");
 $("ask-keep").onclick = () => answerAsk("keep");
 $("ask-skip").onclick = () => answerAsk(null);
@@ -967,10 +1347,19 @@ function renderVersion() {
   $("version-text").textContent = `Survival LLM ${state.version}` + (state.dev ? ` · dev copy: ${state.dev}` : "");
   $("dev-badge").hidden = !state.dev;  // a copy for trying changes before they ship (bin/dev)
   $("dev-badge").title = state.dev ? `Dev copy: ${state.dev}` : "";
-  const app = state.update?.app;
-  $("updates-btn").textContent = app || state.update?.library ? "Update available" : "Check for updates";
-  $("update-banner").hidden = !app || recall("update-dismissed") === app;
-  if (app) $("update-banner").querySelector(".update-text").textContent = `Survival LLM ${app} is available.`;
+  const app = state.update?.app, lib = state.update?.library;
+  $("updates-btn").textContent = app || lib ? "Update available" : "Check for updates";
+  // A new version of the app first; after that (or once it's dismissed), a newer library, which is optional: the one
+  // installed keeps working, and Not now hides the offer until the next library comes out.
+  const showApp = app && recall("update-dismissed") !== app;
+  const showLib = !showApp && lib && !busyJob(jobFor(`library:${lib.id}`)) && recall("library-dismissed") !== lib.version;
+  $("update-banner").hidden = !showApp && !showLib;
+  $("update-banner").dataset.kind = showApp ? "app" : showLib ? "library" : "";
+  if (showApp) $("update-banner").querySelector(".update-text").textContent = `Survival LLM ${app} is available.`;
+  if (showLib) {
+    $("update-banner").querySelector(".update-text").textContent = `A newer library is available.`
+      + (lib.notes ? ` ${lib.notes}` : "") + ` It's a ${size(lib.gb)} download, and yours keeps working until it's in.`;
+  }
   if (updatesDialog.open) renderUpdates();
 }
 
@@ -1015,13 +1404,16 @@ function renderUpdates() {
     }
     if (r.library) {
       const lib = jobFor(`library:${r.library.id}`);
-      html += `<h3>A newer library is available</h3><p class="meta">${esc(r.library.label)}, from ${esc(day(r.library.version))}.</p>`;
+      html += `<h3>A newer library is available</h3>${r.library.notes ? `<p>${esc(r.library.notes)}</p>` : ""}
+        <p class="meta">${esc(r.library.label)}, from ${esc(day(r.library.version))}.</p>`;
       if (busy(lib)) html += progressHTML(lib, "Downloading the new library", "Library update");
       else if (lib?.status === "done") html += `<p>Your library is up to date.</p>`;
       else html += `${lib?.status === "error" ? `<p class="error">${esc(lib.error)}</p>` : ""}
         <button class="ghost" type="button" id="update-library">Update the library (${esc(size(r.library.gb))})</button>
         <p class="meta">Your current library keeps working until the new one is ready, and your own files stay.</p>`;
     }
+    if (state?.library) html += `<p class="meta">To switch between Essentials and Everything, or move the library:
+      <button class="link" type="button" id="updates-library">Library window</button>.</p>`;
     if (r.checked) html += `<p class="meta">Last checked ${esc(new Date(r.checked * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }))}.</p>`;
   }
   if (html === updatesSig) return;  // rebuilding an unchanged window would knock keyboard focus off its buttons
@@ -1029,6 +1421,7 @@ function renderUpdates() {
   $("updates-body").innerHTML = html;
   if ($("install-update")) $("install-update").onclick = installUpdate;
   if ($("update-library")) $("update-library").onclick = () => startLibraryDownload(r.library.id);
+  if ($("updates-library")) $("updates-library").onclick = () => { updatesDialog.close(); openLibrary(); };
 }
 
 async function installUpdate() {
@@ -1046,7 +1439,12 @@ $("updates-btn").onclick = () => openUpdates(true);
 $("close-updates").onclick = () => updatesDialog.close();
 updatesDialog.onclick = (e) => { if (e.target === updatesDialog) updatesDialog.close(); };
 $("banner-update").onclick = () => openUpdates(false);
-$("banner-dismiss").onclick = () => { remember("update-dismissed", state?.update?.app || ""); $("update-banner").hidden = true; };
+$("banner-dismiss").onclick = () => {
+  if ($("update-banner").dataset.kind === "library") remember("library-dismissed", state?.update?.library?.version || "");
+  else remember("update-dismissed", state?.update?.app || "");
+  $("update-banner").hidden = true;
+  renderVersion();  // the library's offer can show next
+};
 
 // ---------- memory: the AI's notes about the person, viewable and editable ----------
 const memoryDialog = $("memory-dialog");

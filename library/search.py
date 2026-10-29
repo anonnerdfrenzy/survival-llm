@@ -1,18 +1,57 @@
 """Read-only search over the offline library built by build_library.py (stdlib only)."""
+import json
 import os
 import re
 import sqlite3
+import sys
+
+
+def app_dir():
+    """The app's settings folder (app/server.py keeps its settings, memory and indexes there)."""
+    if os.environ.get("SURVIVAL_LLM_APP_DIR"):
+        return os.environ["SURVIVAL_LLM_APP_DIR"]
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "Survival LLM")
+    if os.name == "nt":
+        return os.path.join(os.environ.get("APPDATA", home), "Survival LLM")
+    return os.path.join(home, ".survival-llm")
+
+
+def chosen_folder(key):
+    """A folder the person picked in the app: "library_dir" (the library) or "files_dir" (Your files)."""
+    try:
+        with open(os.path.join(app_dir(), "settings.json"), encoding="utf-8") as f:
+            value = json.load(f).get(key)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, str) and os.path.isabs(value) else None
+
+
+def default_library():
+    """Where a new library goes: out of sight, with the app's other data (issue #9). On a Mac the ".noindex" keeps
+    Spotlight from indexing a million articles; on Windows it goes in the local (not roaming) app data folder."""
+    if os.name == "nt":
+        return os.path.join(os.environ.get("LOCALAPPDATA") or app_dir(), "Survival LLM", "Library")
+    return os.path.join(app_dir(), "Library.noindex" if sys.platform == "darwin" else "Library")
+
 
 def _find_library():
-    """$SURVIVAL_LLM_LIBRARY, else ~/Survival LLM Library, else the library.noindex next to this code."""
+    """$SURVIVAL_LLM_LIBRARY; else the folder picked in the app; else a library in ~/Survival LLM Library (where
+    libraries went before 0.4) or the library.noindex next to this code; else the place for a new one."""
     if os.environ.get("SURVIVAL_LLM_LIBRARY"):  # an explicit choice wins, even before anything is installed
         return os.environ["SURVIVAL_LLM_LIBRARY"]
+    chosen = chosen_folder("library_dir")
+    if chosen:
+        return chosen
     dev = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "library.noindex"))
     home = os.path.join(os.path.expanduser("~"), "Survival LLM Library")
+    if os.path.exists(home + ".download"):  # an older version's download, not finished: carry on with it there
+        return home
     for path in (home, dev):
         if os.path.exists(os.path.join(path, "index.sqlite")):
             return path
-    return home
+    return default_library()
 
 
 LIB = _find_library()
@@ -38,8 +77,15 @@ themselves then there these they this those through to too under until up very w
 while who whom why will with would you your yours yourself yourselves""".split())
 
 
+def use_folder(path):
+    """Read the library from path from now on (the app moved it, or the person picked another one)."""
+    global LIB, DB_PATH, TEXT_DIR
+    LIB, DB_PATH, TEXT_DIR = path, os.path.join(path, "index.sqlite"), os.path.join(path, "text")
+
+
 class Library:
-    def __init__(self, path=DB_PATH):
+    def __init__(self, path=None):
+        path = path or DB_PATH
         # check_same_thread=False only so a library swap can close it from another thread (see app/server.py)
         self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
         try:

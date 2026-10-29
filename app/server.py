@@ -12,14 +12,18 @@ import datetime
 import errno
 import filecmp
 import hashlib
+import http.client
 import io
 import json
+import math
 import os
 import platform
 import re
 import secrets
 import shutil
 import signal
+import socket
+import ssl
 import sqlite3
 import subprocess
 import sys
@@ -37,7 +41,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import HOST, capabilities, chat_events, installed_models, system_prompt, trim  # noqa: E402
-from library import myfiles  # noqa: E402
+from library import myfiles, search  # noqa: E402
 from memory import MAX_CHARS as MEMORY_MAX, Memory, parse as parse_notes, prompt_section, size as notes_size  # noqa: E402
 from library.search import DB_PATH, LIB, TOPICS, Library  # noqa: E402
 
@@ -113,7 +117,8 @@ STATE = os.path.join(APP_DIR, "server.json")
 CUSTOM_PROMPT = os.path.join(APP_DIR, "instructions.txt")  # the person's own edit of the AI's instructions
 # The person's own files: a folder they can see, beside the library folder rather than in it (installing a library
 # pack replaces that folder), and its index, kept with the settings.
-MY_DIR = os.environ.get("SURVIVAL_LLM_FILES") or os.path.join(os.path.expanduser("~"), "Survival LLM Files")
+MY_DIR = os.environ.get("SURVIVAL_LLM_FILES") or search.chosen_folder("files_dir") \
+    or os.path.join(os.path.expanduser("~"), "Survival LLM Files")
 MY_DB = os.path.join(APP_DIR, "my-files.sqlite")
 # The AI's notes about the person (memory.py), a plain text file they edit in the app, and the app's settings.
 MEMORY = Memory(os.path.join(APP_DIR, "survival-llm-memory.txt"), os.path.join(APP_DIR, "settings.json"))
@@ -179,6 +184,12 @@ def _dev_label(value):
 
 
 DEV = _dev_label(os.environ.get("SURVIVAL_LLM_DEV"))
+# bin/dev --new-user: the AI models already on this computer count as not downloaded, so a dev copy can go through the
+# first-run setup the way a new person does. "Downloading" one takes seconds (Ollama has its files) and brings it back.
+HIDDEN = {"on": bool(DEV and os.environ.get("SURVIVAL_LLM_NEW_USER")), "models": None}
+# The settings folder's own name for what the page keeps in the browser (the chosen model, Reasoning), so a dev copy's
+# fresh profile starts from nothing there too. The normal app keeps the plain names it has always used.
+PROFILE = hashlib.sha1(APP_DIR.encode()).hexdigest()[:8] if os.environ.get("SURVIVAL_LLM_APP_DIR") else ""
 engine_procs = []   # Ollama processes this app started, stopped when it quits
 
 conversations = {}
@@ -187,12 +198,21 @@ local = threading.local()
 lib_version = [0]   # bumped when a new library is installed, so threads reopen it
 lib_lock = threading.Lock()  # held while a new library is swapped in, so no thread opens the old one meanwhile
 open_libs = weakref.WeakSet()  # every open library, so a swap can close them (Windows won't move open files)
-downloads = {}      # key -> {key, label, status, completed, total, error}; runs in background threads
+downloads = {}      # key -> {key, label, status, completed, total, error, rate, retry}; runs in background threads
 dl_lock = threading.Lock()
+ACTIVE = ("starting", "downloading", "unpacking")
+cancels = {}        # job key -> Event that stops its download (the person changed what to download)
+speeds = {}         # job key -> [time, bytes done, bytes a second], for "about 20 minutes left"
+SETUP = os.path.join(APP_DIR, "setup.json")  # the first-run choices, so setup carries on after the app restarts
+setup_state = {"running": False, "step": None, "waiting": None, "retry_at": 0.0, "error": None, "attempts": 0}
+setup_lock = threading.Lock()
+setup_wake = threading.Event()  # Try now, Try again, or a change of plan: stop waiting
+RETRY_FIRST, RETRY_MOST = 5, 60  # seconds before setup tries a stopped download again: 5, 10, 20, 40, then every 60
 warming = {}        # model -> "loading" | "error"
 manifest = {"packs": None, "failed_at": 0.0, "error": None}
 ollama_started_at = [0.0]
 quit_hooks = []     # run when someone presses Quit (closes the app window)
+windows = []        # the app's window, for the folder picker
 quit_event = threading.Event()
 httpd = None        # the web server, once it is listening
 
@@ -387,6 +407,21 @@ def model_caps(model):
     return caps_cache[model]
 
 
+def cached_packs():
+    """The packs as last fetched, fetching them in the background when there's no list yet, so a status request
+    never waits on the internet (with Wi-Fi but no internet, that would hang)."""
+    if manifest["packs"] is None and not manifest.get("fetching") and time.time() - manifest["failed_at"] > 60:
+        manifest["fetching"] = True
+
+        def fetch():
+            try:
+                library_packs()
+            finally:
+                manifest["fetching"] = False
+        threading.Thread(target=fetch, daemon=True).start()
+    return manifest["packs"] or []
+
+
 def library_packs():
     """Packs from the published manifest; empty when offline or unpublished (checked again after a minute)."""
     if manifest["packs"] is None and time.time() - manifest["failed_at"] > 60:
@@ -474,6 +509,58 @@ def engine_info():
         return None
 
 
+engine_versions = {"own": [], "running": (0.0, None)}  # cached: this app's engine, and the running one (checked at most every 60 s)
+
+
+def own_engine_version():
+    """The version of the AI engine this app carries (Mac) or downloaded (Windows), such as "0.40.11"; None if none."""
+    if not engine_versions["own"]:
+        version = None
+        if ENGINE and os.path.exists(ENGINE):
+            try:  # pointed at a closed port, it reports only its own version, not the running engine's
+                out = subprocess.run([ENGINE, "--version"], capture_output=True, text=True, timeout=10,
+                                     env={**os.environ, "OLLAMA_HOST": "127.0.0.1:9"},
+                                     **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+                found = re.findall(r"version is (\d+(?:\.\d+)+)", out.stdout + out.stderr)
+                version = found[-1] if found else None
+            except (OSError, subprocess.SubprocessError):
+                pass
+        engine_versions["own"].append(version)
+    return engine_versions["own"][0]
+
+
+def running_engine():
+    """{"version", "ours"} for the AI engine answering now, or None. "ours": started by this app, not an Ollama app
+    the person runs themselves (which Survival LLM uses when it finds one already running)."""
+    at, version = engine_versions["running"]
+    if time.monotonic() - at > 60 or version is None:
+        try:
+            with urllib.request.urlopen(HOST + "/api/version", timeout=3) as resp:
+                version = json.load(resp).get("version")
+        except (OSError, ValueError):
+            version = None
+        engine_versions["running"] = (time.monotonic(), version)
+    return {"version": version, "ours": any(p.poll() is None for p in engine_procs)} if version else None
+
+
+def engine_too_old():
+    """What to do when a model needs a newer AI engine than the one running, in plain words (issue #13)."""
+    running, own = running_engine() or {}, own_engine_version()
+    if running.get("ours"):
+        if sys.platform == "darwin":
+            return ("This model needs a newer AI engine than the one built into this version of Survival LLM. Check for "
+                    "updates (at the bottom of the window); until then, pick another model under Model.")
+        return "This model needs a newer AI engine than the one Survival LLM installed. Pick another model under Model."
+    have = f" (version {running['version']})" if running.get("version") else ""
+    if own and running.get("version") and version_tuple(own) > version_tuple(running["version"]):
+        where = "in the menu bar" if sys.platform == "darwin" else "by the clock"
+        return (f"This model needs a newer AI engine than the Ollama app running on this computer{have}. Quit Ollama "
+                f"(its icon {where}) and open Survival LLM again: it then uses its own engine (version {own}), which "
+                "can download it. Or update Ollama at ollama.com/download.")
+    return (f"This model needs a newer AI engine than the Ollama running on this computer{have}. Update Ollama at "
+            "ollama.com/download, then try again.")
+
+
 def loaded_models():
     """Models Ollama currently has in memory (ready to answer without loading)."""
     try:
@@ -494,7 +581,7 @@ def friendly_error(exc):
         if exc.code == 404 or "not found" in low:
             return "This model isn't installed. Open Model at the top to download it or pick another."
         if "newer version" in low or "requires" in low and "ollama" in low:
-            return "This model needs a newer AI engine. Update Ollama (ollama.com/download), then try again."
+            return engine_too_old()
         if "memory" in low:
             return "There isn't enough free memory for this model. Close other apps, or pick a smaller model under Model."
         return f"The AI engine reported a problem: {detail or exc.reason}."
@@ -511,45 +598,152 @@ def friendly_error(exc):
 
 # ---------- background jobs: model downloads, library installs, warm-up ----------
 
+class Cancelled(Exception):
+    """A download stopped on purpose: the person changed what to download."""
+
+
 def _update(key, **fields):
     with dl_lock:
+        if "completed" in fields:  # download speed, smoothed over a few seconds
+            now, done = time.monotonic(), fields["completed"]
+            at, before, rate = speeds.get(key) or (now, done, 0.0)
+            if key not in speeds or done < before:  # first report, or it started over
+                speeds[key] = [now, done, 0.0]
+            elif now - at >= 1:
+                step = (done - before) / (now - at)
+                speeds[key] = [now, done, 0.7 * rate + 0.3 * step if rate else step]
+            fields["rate"] = round(speeds[key][2])
         downloads[key].update(fields)
+
+
+NETWORK_ERRNOS = {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN, errno.ETIMEDOUT, errno.ECONNABORTED,
+                  errno.ECONNRESET, errno.ECONNREFUSED, errno.EPIPE}
+
+
+def download_error(exc):
+    """What went wrong with a download, in plain words, and whether trying again can fix it: "network" (the
+    connection dropped or the computer slept: try until it is back), "again" (try a few more times) or None (the
+    person has to do something first, such as free up disk space)."""
+    text = str(exc)
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC:
+        return "The disk is full. Free up some space, then try again.", None
+    if isinstance(exc, urllib.error.HTTPError):
+        if str(getattr(exc, "url", "") or "").startswith(HOST):
+            return friendly_error(exc), "again"
+        return f"The download site answered with an error (HTTP {exc.code}).", "again"
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, ConnectionRefusedError):  # the AI engine went away mid-download
+        start_ollama()
+        return "The AI engine stopped. Starting it again.", "network"
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return ("Couldn't check the download site's security certificate (a company network or antivirus may be in "
+                "the way)."), None
+    if isinstance(exc, (urllib.error.URLError, http.client.HTTPException, TimeoutError, ConnectionError, ssl.SSLError,
+                        socket.gaierror)) or getattr(exc, "errno", None) in NETWORK_ERRNOS:
+        return "The internet connection dropped.", "network"
+    if isinstance(exc, OSError):  # the disk, not the internet: say which file and why, and don't keep retrying
+        where = f" ({exc.filename})" if getattr(exc, "filename", None) else ""
+        if exc.errno == errno.EFBIG:
+            return (f"That drive can't hold files this big{where}. It's probably formatted as FAT32: pick another "
+                    "drive, or reformat it as exFAT."), None
+        if exc.errno == errno.EROFS:
+            return f"That drive is read-only{where}. Pick another place for the library.", None
+        if isinstance(exc, (PermissionError, FileNotFoundError)):
+            return (f"Survival LLM can't save there{where}. If the library is on a drive, plug it in; or move the "
+                    "library somewhere else (Library window)."), None
+        return f"Couldn't save the download{where}: {exc.strerror or exc}.", None
+    low = text.lower()
+    if "not enough free disk" in low or "no space" in low:
+        return text, None
+    if "damaged in transit" in low:
+        return text, "again"
+    if "check the internet" in low:
+        return text, "network"
+    if text.startswith("Download failed:"):  # Ollama's own words for a model download that stopped
+        if "newer version" in low:
+            return engine_too_old(), None
+        if any(w in low for w in ("file does not exist", "not found", "unauthorized")):
+            return text, None
+        if any(w in low for w in ("connection", "timeout", "timed out", "eof", "reset", "dial tcp", "no such host",
+                                  "tls", "temporary", "network")):
+            return "The internet connection dropped.", "network"
+        return text, "again"
+    return text, None
 
 
 def start_job(key, label, worker, *args):
     """Run a download in the background so it survives page reloads. False if it is already running."""
     with dl_lock:
         current = downloads.get(key)
-        if current and current["status"] in ("starting", "downloading", "unpacking"):
+        if current and current["status"] in ACTIVE:
             return False
-        downloads[key] = {"key": key, "label": label, "status": "starting", "completed": 0, "total": 0, "error": None}
+        downloads[key] = {"key": key, "label": label, "status": "starting", "completed": 0, "total": 0, "error": None,
+                          "rate": 0, "retry": None}
+        cancels[key] = threading.Event()
+        speeds.pop(key, None)
 
     def run():
         try:
             worker(key, *args)
             _update(key, status="done")
-        except Exception as exc:  # shown to the user until they retry
-            _update(key, status="error", error=friendly_error(exc) if isinstance(exc, OSError) else str(exc))
+        except Cancelled:
+            _update(key, status="cancelled")
+        except Exception as exc:  # shown to the user until they retry (setup retries on its own)
+            error, retry = download_error(exc)
+            _update(key, status="error", error=error, retry=retry)
     threading.Thread(target=run, daemon=True).start()
     return True
+
+
+NEW_USER_GOT = os.path.join(APP_DIR, "new-user-downloaded.json")  # bin/dev --new-user: models "downloaded" so far
+
+
+def visible_models(models):
+    """Installed models, less the ones bin/dev --new-user pretends aren't downloaded yet (until "downloaded" in this
+    preview, which is remembered, so quitting and reopening it works the way it does for a new person)."""
+    if not HIDDEN["on"] or models is None:
+        return models
+    if HIDDEN["models"] is None:
+        try:
+            with open(NEW_USER_GOT) as f:
+                got = set(json.load(f))
+        except (OSError, ValueError):
+            got = set()
+        HIDDEN["models"] = {m.removesuffix(":latest") for m in models} - got
+    return [m for m in models if m.removesuffix(":latest") not in HIDDEN["models"]]
 
 
 def pull_worker(key, model):
     req = urllib.request.Request(HOST + "/api/pull", data=json.dumps({"model": model}).encode(),
                                  headers={"Content-Type": "application/json"})
+    stop, layers = cancels.get(key), {}
     with urllib.request.urlopen(req, timeout=120) as resp:
         for line in resp:
+            if stop is not None and stop.is_set():
+                raise Cancelled()  # closing the connection stops Ollama's download; it keeps what it has
             event = json.loads(line)
             if event.get("error"):
                 raise RuntimeError(f"Download failed: {event['error']}")
-            if event.get("total"):
-                _update(key, status="downloading", completed=event.get("completed", 0), total=event["total"])
+            if event.get("total"):  # one event per file of the model: add them up, so the bar never jumps back
+                layers[event.get("digest", "")] = (event.get("completed", 0), event["total"])
+                _update(key, status="downloading", completed=sum(c for c, _ in layers.values()),
+                        total=sum(t for _, t in layers.values()))
     caps_cache.pop(model, None)
+    if HIDDEN["models"] is not None:
+        HIDDEN["models"].discard(model.removesuffix(":latest"))
+        try:
+            with open(NEW_USER_GOT) as f:
+                got = json.load(f)
+        except (OSError, ValueError):
+            got = []
+        with open(NEW_USER_GOT, "w") as f:
+            json.dump(sorted(set(got) | {model.removesuffix(":latest")}), f)
 
 
 def _download(key, url, path, size, done_before=0, total=None):
     """Fetch url into path, resuming a partial file; reports progress to job key."""
     have = os.path.getsize(path) if os.path.exists(path) else 0
+    stop = cancels.get(key)
     if have < size:
         req = urllib.request.Request(url, headers={"Range": f"bytes={have}-"} if have else {})
         with urllib.request.urlopen(req, timeout=120) as resp:
@@ -557,6 +751,8 @@ def _download(key, url, path, size, done_before=0, total=None):
                 have = 0
             with open(path, "ab" if have else "wb") as f:
                 while chunk := resp.read(1 << 20):
+                    if stop is not None and stop.is_set():
+                        raise Cancelled()  # what it has stays on disk, so choosing this again picks up from there
                     f.write(chunk)
                     have += len(chunk)
                     _update(key, status="downloading", completed=done_before + have, total=total or size)
@@ -658,9 +854,15 @@ def library_worker(key, pack_id):
     pack = next((p for p in library_packs() if p["id"] == pack_id), None)
     if not pack:
         raise RuntimeError("That library pack isn't available. Check the internet connection.")
+    if os.path.isdir(LIB) and not os.path.islink(LIB) and not only_library(LIB):
+        raise RuntimeError(f"The library's folder ({LIB}) has other files in it too, so Survival LLM won't replace it. "
+                           "Move the library to a folder of its own first (Library window, Move it…).")
     work, partial = LIB + ".download", LIB + ".partial"
     shutil.rmtree(partial, ignore_errors=True)  # left by an install that stopped while unpacking
     os.makedirs(work, exist_ok=True)
+    for name in os.listdir(work):  # parts of a pack chosen before and then changed: not wanted now
+        if not name.startswith(pack_id + "."):
+            os.remove(os.path.join(work, name))
     paths = [os.path.join(work, f"{pack_id}.{n:03d}") for n in range(len(pack["parts"]))]
     total = sum(part["bytes"] for part in pack["parts"])
     # the most on disk at once: the unpacked library plus the parts not unpacked yet (the manifest has the exact
@@ -671,13 +873,17 @@ def library_worker(key, pack_id):
     if need > disk_free_gb(os.path.dirname(LIB)):
         raise RuntimeError(f"Not enough free disk space: installing this pack needs about {need:.0f} GB free, "
                            f"and this computer has {disk_free_gb(os.path.dirname(LIB))} GB.")
-    done_before = 0
+    done_before, stop = 0, cancels.get(key)
     for n, (part, path) in enumerate(zip(pack["parts"], paths)):
+        if stop is not None and stop.is_set():
+            raise Cancelled()
         _download(key, part["url"], path, part["bytes"], done_before, total)
         if _sha256(path) != part["sha256"]:
             os.remove(path)
             raise RuntimeError(f"Part {n + 1} of {len(pack['parts'])} was damaged in transit. Try again to re-download it.")
         done_before += part["bytes"]
+    if stop is not None and stop.is_set():
+        raise Cancelled()
     _update(key, status="unpacking", completed=total, total=total)
     parts = PackParts(paths)
     try:
@@ -734,6 +940,342 @@ def warm_model(model):
         except OSError:
             warming[model] = "error"
     threading.Thread(target=run, daemon=True).start()
+
+
+# ---------- the library's folder and Your files folder: the person can pick them (issue #9) ----------
+
+def library_busy():
+    """The library job running now (a pack download or a move), if any: only one at a time, since they all work in
+    the folders beside the library (issue #4)."""
+    with dl_lock:
+        return next((j["key"] for j in downloads.values() if j["status"] in ACTIVE
+                     and (j["key"].startswith("library:") or j["key"] == "library-move")), None)
+
+
+def use_library_dir(path, move_from=None):
+    """Read the library from path from now on, in every thread, and remember the choice. move_from: first rename
+    that folder to path, while no thread has the library open."""
+    global LIB, DB_PATH
+    with lib_lock:
+        for lib in list(open_libs):  # threads reopen the library from the new place (and Windows won't move a
+            try:                    # folder with open files in it)
+                lib.db.close()
+            except Exception:
+                pass
+        try:
+            if move_from:
+                try:
+                    os.rename(move_from, path)
+                except OSError:
+                    raise RuntimeError("Couldn't move the library. Close any window showing its folder, then try "
+                                       "again.") from None
+            search.use_folder(path)
+            LIB, DB_PATH = search.LIB, search.DB_PATH
+        finally:
+            lib_version[0] += 1  # every thread reopens the library, wherever it is now
+    MEMORY.set_setting("library_dir", path)
+
+
+def folder_problem(folder):
+    """Why a folder the person picked can't be used, or None."""
+    if not os.path.isabs(folder):
+        return "Pick a folder."
+    if not os.path.isdir(folder):
+        return "That folder doesn't exist (is the drive plugged in?)."
+    if not writable(folder):
+        return "Survival LLM can't save to that folder. Pick another one."
+    return None
+
+
+# What a library folder holds. A library switch or update replaces the library's folder, and a move deletes the old
+# one, so a folder with anything else in it (someone's photos, a build's source files) is never used as one.
+LIBRARY_FILES = {"index.sqlite", "index.sqlite-wal", "index.sqlite-shm", "index.sqlite-journal", "text", "pack.json",
+                 "SOURCES.md", ".build.lock", ".DS_Store", "Thumbs.db", "desktop.ini"}
+
+
+def only_library(folder):
+    """Whether folder holds nothing but a library's files (or nothing at all)."""
+    try:
+        return all(name in LIBRARY_FILES for name in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def remove_library(folder):
+    """Delete a library's files from folder, then the folder if that leaves it empty; anything else stays."""
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        if name in LIBRARY_FILES:
+            shutil.rmtree(path, ignore_errors=True) if os.path.isdir(path) else os.remove(path)
+    try:
+        os.rmdir(folder)
+    except OSError:
+        pass
+
+
+def library_target(folder):
+    """Where the library goes in a folder the person picked: the folder itself if it holds a library and nothing else
+    (one copied to a USB stick, say) or is an empty "Survival LLM Library" folder; else a "Survival LLM Library"
+    folder inside it (which may already hold a library)."""
+    named = os.path.basename(folder.rstrip("/\\")) == "Survival LLM Library"
+    if only_library(folder) and (named or os.path.exists(os.path.join(folder, "index.sqlite"))):
+        return folder
+    return os.path.join(folder, "Survival LLM Library")
+
+
+def folder_bytes(path):
+    total = 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def same_device(a, b):
+    return os.stat(a).st_dev == os.stat(b).st_dev
+
+
+def move_worker(key, target):
+    """Move the library to target and read it from there. On the same disk that is a rename, done at once. Onto
+    another disk (an external drive, say) it is copied file by file, then the old copy is deleted; until then the old
+    one keeps working. A library that is a link to a folder elsewhere keeps that folder: only the link goes."""
+    source, stop = LIB, cancels.get(key)
+    if not os.path.exists(os.path.join(source, "index.sqlite")):  # nothing installed yet: just use the new place
+        for leftover in (source + ".download", source + ".partial"):  # an unfinished download starts over there
+            shutil.rmtree(leftover, ignore_errors=True)
+        use_library_dir(target)
+        return
+    if os.path.exists(target):
+        if os.path.isdir(target) and not os.listdir(target):
+            os.rmdir(target)  # an empty folder they made for it
+        else:
+            raise RuntimeError("There's already a folder called Survival LLM Library there. Pick another folder.")
+    real = os.path.realpath(source)
+    if os.path.realpath(target).startswith(real + os.sep):
+        raise RuntimeError("That folder is inside the library itself. Pick a folder outside it.")
+    same_disk = not os.path.islink(source) and only_library(source) and same_device(real, os.path.dirname(target))
+    if same_disk:
+        use_library_dir(target, move_from=source)
+        return
+    total = folder_bytes(real)
+    if total / 1e9 + 1 > disk_free_gb(os.path.dirname(target)):
+        raise RuntimeError(f"Not enough free space there: the library needs about {total / 1e9 + 1:.0f} GB, and that "
+                           f"drive has {disk_free_gb(os.path.dirname(target))} GB free.")
+    partial, done = target + ".partial", 0
+    shutil.rmtree(partial, ignore_errors=True)
+    _update(key, status="downloading", completed=0, total=total)
+    try:
+        for root, dirs, files in os.walk(real):
+            out = os.path.join(partial, os.path.relpath(root, real))
+            os.makedirs(out, exist_ok=True)
+            for name in files:
+                if stop is not None and stop.is_set():
+                    raise Cancelled()
+                shutil.copyfile(os.path.join(root, name), os.path.join(out, name))
+                done += os.path.getsize(os.path.join(out, name))
+                _update(key, completed=done, total=total)
+        os.rename(partial, target)
+    except BaseException:
+        shutil.rmtree(partial, ignore_errors=True)  # don't leave half a copy on their drive
+        raise
+    use_library_dir(target)
+    if os.path.islink(source):
+        os.remove(source)
+    else:
+        remove_library(source)  # only the library's own files: anything else in that folder stays
+
+
+def use_files_dir(folder):
+    """Search the person's files in another folder from now on. The files in the old folder stay where they are; the
+    index starts over, since it is only a copy of what's in the folder."""
+    global MY_DIR
+    with lib_lock:
+        for lib in list(open_libs):
+            try:
+                lib.db.close()
+            except Exception:
+                pass
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(MY_DB + suffix)
+            except OSError:
+                pass
+        MY_DIR = folder
+        lib_version[0] += 1
+    MEMORY.set_setting("files_dir", folder)
+    threading.Thread(target=check_my_files, daemon=True).start()
+
+
+def pick_folder(start):
+    """Ask the person to pick a folder in the system's own dialog; the path, or None if they cancel. Raises
+    LookupError when there's no app window to show it in (the app running in a browser)."""
+    if not windows:
+        raise LookupError("no window")
+    import webview
+    picked = windows[0].create_file_dialog(webview.FileDialog.FOLDER, directory=start if os.path.isdir(start) else "")
+    return picked[0] if picked else None
+
+
+# ---------- first-run setup: the library, then the AI, in one go that finishes on its own ----------
+
+def setup_plan():
+    """The first-run choices, {"pack": library pack id or None, "model": Ollama name or None}, until all of it is
+    installed; None when there is no setup going on."""
+    try:
+        with open(SETUP) as f:
+            plan = json.load(f)
+        return plan if isinstance(plan, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def save_setup(plan):
+    os.makedirs(APP_DIR, exist_ok=True)
+    with open(SETUP + ".tmp", "w") as f:
+        json.dump(plan, f)
+    os.replace(SETUP + ".tmp", SETUP)
+
+
+def clear_setup():
+    try:
+        os.remove(SETUP)
+    except OSError:
+        pass
+
+
+def setup_step(plan):
+    """What setup does next: (step, job key, label, worker, args) for a download; ("wait", why) while the AI engine
+    starts or has to be installed by hand; None once everything chosen is installed. The library comes first: it is
+    the smaller download, and useful on its own (Search library) while the AI downloads."""
+    pack = plan.get("pack")
+    if pack and (installed_pack() or {}).get("id") != pack:
+        busy = library_busy()
+        if busy and busy != f"library:{pack}":
+            return "wait", "library-busy"
+        label = next((p["label"] for p in library_packs() if p["id"] == pack), pack)
+        return "library", f"library:{pack}", label, library_worker, (pack,)
+    model = plan.get("model")
+    if not model:
+        return None
+    models = visible_models(installed_models())
+    if models is None:  # the AI engine isn't answering
+        app, binary = ollama_locations()
+        if app or binary:
+            start_ollama()
+            return "wait", "engine-starting"
+        if engine_info() and ENGINE:
+            return "engine", "engine", "AI engine (Ollama)", engine_worker, ()
+        return "wait", "install-engine"
+    if model.removesuffix(":latest") not in {m.removesuffix(":latest") for m in models}:
+        return "model", f"model:{model}", friendly_name(model), pull_worker, (model,)
+    return None
+
+
+def keep_awake():
+    """Keep the computer from going to sleep on its own while setup downloads (closing a laptop's lid still puts it
+    to sleep; the download then carries on after it wakes). Returns the function that lets it sleep again."""
+    if sys.platform == "darwin":
+        try:
+            proc = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            return lambda: None
+        return proc.terminate
+    if os.name == "nt":  # for this thread, which runs the whole setup
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)  # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+        return lambda: ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+    return lambda: None
+
+
+def run_setup_job(key, label, worker, args):
+    """Run one setup download to the end. One that stops is tried again after a pause: until the connection is back
+    for a dropped connection or a sleep, a few times for other problems; the rest wait for the person's Try again."""
+    let_sleep = keep_awake()  # only while it downloads, never through a wait: a laptop offline can sleep
+    try:
+        start_job(key, label, worker, *args)  # False if already running (started from the Model window): wait for it
+        while True:
+            with dl_lock:
+                job = dict(downloads[key])
+            if job["status"] not in ACTIVE or quit_event.is_set():
+                break
+            time.sleep(0.2)
+    finally:
+        let_sleep()
+    if job["status"] == "done":
+        setup_state.update(attempts=0, error=None, waiting=None)
+        return True
+    if job["status"] != "error":  # cancelled: the person changed what to download
+        return False
+    setup_state["attempts"] += 1
+    tries = setup_state["attempts"]
+    if job.get("retry") == "network" or (job.get("retry") == "again" and tries <= 3):
+        delay = min(RETRY_MOST, RETRY_FIRST * 2 ** min(tries - 1, 4))
+        setup_state.update(waiting="retry", retry_at=time.time() + delay, error=job["error"])
+        setup_wake.wait(delay)
+    else:
+        setup_state.update(waiting="stuck", error=job["error"])
+        setup_wake.wait()
+    setup_wake.clear()
+    setup_state.update(waiting=None, error=None)
+    return False
+
+
+def run_setup():
+    """Work through the first-run choices until everything chosen is installed, then forget them. Runs again when the
+    app starts, so quitting halfway is fine: the downloads pick up where they left off."""
+    with setup_lock:
+        if setup_state["running"]:
+            return
+        setup_state.update(running=True, waiting=None, error=None, attempts=0)
+    finished = None
+    try:
+        while not quit_event.is_set():
+            plan = setup_plan()
+            step = setup_step(plan) if plan else None
+            if step is None:
+                if plan:
+                    clear_setup()  # all installed
+                    finished = plan
+                break
+            setup_state["step"] = step[0]
+            if step[0] == "wait":
+                setup_state["waiting"] = step[1]
+                setup_wake.wait(3)
+                setup_wake.clear()
+                continue
+            setup_state["waiting"] = None
+            if run_setup_job(*step[1:]) and step[0] == "library":
+                # Done with the library: forget the choice, so a switch to the other pack made meanwhile in the
+                # Library window isn't undone when setup checks again.
+                plan = setup_plan()
+                if plan and plan.get("pack") == step[1].split(":", 1)[1]:
+                    save_setup({**plan, "pack": None})
+    finally:
+        with setup_lock:
+            setup_state.update(running=False, step=None, waiting=None)
+    if setup_plan() not in (None, finished) and not quit_event.is_set():  # new choices came in as this run finished
+        run_setup()
+
+
+def setup_status():
+    plan = setup_plan()
+    if not plan:
+        return None
+    return {"pack": plan.get("pack"), "model": plan.get("model"), "running": setup_state["running"],
+            "step": setup_state["step"], "waiting": setup_state["waiting"], "error": setup_state["error"],
+            "retry_in": max(0, round(setup_state["retry_at"] - time.time()))}
+
+
+def pack_summary(pack):
+    """A pack as the setup screen shows it: its name, what is in it, and the disk space it needs while installing."""
+    name, _, rest = pack["label"].partition(":")
+    about = rest.split(" (")[0].strip()
+    return {"id": pack["id"], "label": pack["label"], "gb": pack["gb"], "name": name.strip(),
+            "about": about[:1].upper() + about[1:], "articles": pack.get("articles"),
+            "disk_gb": math.ceil((pack.get("install_bytes") or pack["gb"] * 3.5e9) / 1e9)}
 
 
 # ---------- HTTP ----------
@@ -841,7 +1383,7 @@ def newer_library():
     pack = installed_pack()
     offer = next((p for p in manifest["packs"] or [] if pack and p["id"] == pack.get("id")), None)
     if offer and offer.get("version", FIRST_PACKS) > str(pack.get("version", FIRST_PACKS)):  # ISO dates sort as text
-        return {k: offer.get(k) for k in ("id", "label", "gb", "version")}
+        return {k: offer.get(k) for k in ("id", "label", "gb", "version", "articles", "notes")}
     return None
 
 
@@ -1104,7 +1646,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = f.read()
             if name == "index.html":
                 # Other websites cannot read this page (no CORS headers), so the token stays private.
-                data = data.replace(b"{{TOKEN}}", TOKEN.encode())
+                data = data.replace(b"{{TOKEN}}", TOKEN.encode()).replace(b"{{PROFILE}}", PROFILE.encode())
             return self._send(200, data, MIME.get(os.path.splitext(name)[1], "application/octet-stream"))
         if not self._allowed():
             return self._send(403, {"error": "forbidden"})
@@ -1135,7 +1677,7 @@ class Handler(BaseHTTPRequestHandler):
     def _status(self):
         if time.monotonic() - my_files_checked[0] > 30:  # picks up files changed or added in the folder itself
             check_my_files()
-        models = installed_models()
+        models = visible_models(installed_models())
         if models is None:
             start_ollama()
         app, binary = ollama_locations()
@@ -1145,25 +1687,32 @@ class Handler(BaseHTTPRequestHandler):
         mine = lib.mine.stats()[0] if lib and lib.mine else 0
         chat_models = [m.removesuffix(":latest") for m in models or [] if not any(x in m for x in NOT_CHAT)]
         catalog = machine_catalog(chat_models)
+        if HIDDEN["models"]:  # bin/dev --new-user: these "download" in seconds, so time estimates leave them out
+            for c in catalog:
+                c["preview_cached"] = any((catalog_entry(m) or {}).get("key") == c["key"] for m in HIDDEN["models"])
         best = next((c["model"] for c in catalog if c["installed"] and c["fits"]), None)
         with dl_lock:
             jobs = [dict(j) for j in downloads.values()]
         return {
             "ollama": models is not None, "ollama_installed": bool(app or binary), "ollama_starting": ollama_starting(),
             "engine": {"downloadable": bool(info and ENGINE and not (app or binary)),
-                       "gb": round(info["bytes"] / 1e9, 1) if info else None},
+                       "gb": round(info["bytes"] / 1e9, 1) if info else None,
+                       "running": running_engine() if models is not None else None},
             "models": [{"model": m, "name": friendly_name(m), "tested": bool(catalog_entry(m))} for m in chat_models],
             "default_model": best or (chat_models or [None])[0],
             "loaded": loaded_models() if models is not None else [],
             "warming": [m for m, s in warming.items() if s == "loading"],
             "catalog": catalog, "downloads": jobs,
-            "library": {"articles": docs, "sources": sources} if docs else None,
-            "packs": [] if docs else [{k: p[k] for k in ("id", "label", "gb")} for p in library_packs()],
-            "packs_error": None if docs else manifest["error"],
-            "library_dir": LIB, "disk_free_gb": disk_free_gb(),
+            "library": {"articles": docs, "sources": sources, "pack": (installed_pack() or {}).get("id")} if docs else None,
+            "packs": [pack_summary(p) for p in cached_packs()],
+            "packs_error": "loading" if manifest["packs"] is None and manifest.get("fetching") else manifest["error"],
+            "setup": setup_status(),
+            "library_dir": LIB, "files_dir": MY_DIR, "disk_free_gb": disk_free_gb(),
+            # a library folder they picked that isn't there now: a drive that's unplugged, most likely
+            "library_away": not docs and bool(search.chosen_folder("library_dir")) and not os.path.isdir(LIB),
             "my_files": {"ready": mine, "busy": myfiles.progress["busy"]},
             "version": VERSION, "dev": DEV,
-            "update": {"app": (newer_app() or {}).get("version"), "library": bool(newer_library())},
+            "update": {"app": (newer_app() or {}).get("version"), "library": newer_library()},
             "machine": {"os": "macOS" if sys.platform == "darwin" else platform.system(), "ram_gb": ram_gb()},
             "topics": TOPICS}
 
@@ -1229,6 +1778,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(500, {"error": "Couldn't move it to the " + ("Recycle Bin." if os.name == "nt" else "Trash.")})
             check_my_files()
             return self._send(200, {"ok": True})
+        if url.path == "/api/library/open":  # show the library's folder in Finder or Explorer
+            if os.path.isdir(LIB):
+                open_folder(LIB)
+            return self._send(200, {"ok": True})
         if url.path == "/api/myfiles/open":
             open_folder(MY_DIR)
             return self._send(200, {"ok": True})
@@ -1243,9 +1796,71 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200 if started else 409, {"ok": started})
         if url.path == "/api/library":
             pack = str(body.get("pack", ""))
+            busy = library_busy()
+            if busy and busy != f"library:{pack}":
+                return self._send(409, {"error": "Another library download or move is running. Wait for it to finish."})
             label = next((p["label"] for p in library_packs() if p["id"] == pack), pack)
             started = start_job(f"library:{pack}", label, library_worker, pack)
             return self._send(200 if started else 409, {"ok": started})
+        if url.path == "/api/setup":  # the first-run choices: setup then downloads them in order, on its own
+            pack = str(body.get("pack") or "") or None
+            if pack and pack not in [p["id"] for p in library_packs()]:
+                return self._send(400, {"error": "That library pack isn't available. Check the internet connection."})
+            if model and model not in [c["model"] for c in machine_catalog(visible_models(installed_models()) or [])]:
+                return self._send(400, {"error": "unknown model"})
+            if not (pack or model):
+                return self._send(400, {"error": "nothing to download"})
+            save_setup({"pack": pack, "model": model or None})
+            setup_wake.set()
+            threading.Thread(target=run_setup, daemon=True).start()
+            return self._send(200, {"ok": True})
+        if url.path == "/api/pick-folder":  # the system's folder dialog; 501 when running in a browser
+            try:
+                return self._send(200, {"path": pick_folder(str(body.get("start") or ""))})
+            except LookupError:
+                return self._send(501, {"error": "no window"})
+        if url.path == "/api/library/move":  # keep the library in another folder (an external drive, say)
+            folder = os.path.abspath(os.path.expanduser(str(body.get("folder") or "")))
+            problem = folder_problem(folder)
+            if problem:
+                return self._send(400, {"error": problem})
+            if library_busy():
+                return self._send(409, {"error": "Another library download or move is running. Wait for it to finish."})
+            target = library_target(folder)
+            if os.path.realpath(target) == os.path.realpath(LIB):
+                return self._send(200, {"ok": True, "same": True})
+            if os.path.exists(os.path.join(target, "index.sqlite")):  # a library already there: read that one
+                use_library_dir(target)
+                return self._send(200, {"ok": True, "existing": True})
+            started = start_job("library-move", "Moving the library", move_worker, target)
+            return self._send(200 if started else 409, {"ok": started})
+        if url.path == "/api/myfiles/folder":  # look for the person's files in another folder
+            folder = os.path.abspath(os.path.expanduser(str(body.get("folder") or "")))
+            problem = folder_problem(folder)
+            real = os.path.realpath(folder)
+            lib_real = os.path.realpath(LIB)
+            if not problem and (real == lib_real or real.startswith(lib_real + os.sep)):
+                problem = "That's inside the library folder, which a library update replaces. Pick another folder."
+            elif not problem and lib_real.startswith(real.rstrip(os.sep) + os.sep):
+                problem = ("That folder holds the library, so its articles would count as your files. Pick a folder "
+                           "inside it, or another one.")
+            if problem:
+                return self._send(400, {"error": problem})
+            if myfiles.progress.get("busy"):
+                return self._send(409, {"error": "Your files are still being read. Try again in a moment."})
+            use_files_dir(folder)
+            return self._send(200, {"ok": True})
+        if url.path == "/api/setup/retry":  # Try now / Try again
+            setup_wake.set()
+            return self._send(200, {"ok": True})
+        if url.path == "/api/setup/cancel":  # change what to download: stop the setup downloads, back to the choices
+            plan = setup_plan() or {}
+            clear_setup()
+            for key in (f"library:{plan.get('pack')}", f"model:{plan.get('model')}", "engine"):
+                if key in cancels:
+                    cancels[key].set()
+            setup_wake.set()
+            return self._send(200, {"ok": True})
         if url.path == "/api/warm":
             warm_model(model)
             return self._send(200, {"ok": True})
@@ -1408,6 +2023,7 @@ def open_window(url):
         window = webview.create_window(f"Survival LLM (dev: {DEV})" if DEV else "Survival LLM", url, width=1280,
                                        height=860, min_size=(420, 520), text_select=True)
         quit_hooks.append(window.destroy)
+        windows.append(window)
         webview.start(gui="edgechromium" if os.name == "nt" else None, private_mode=False,
                       storage_path=os.path.join(APP_DIR, "window"))
         return True
@@ -1462,6 +2078,8 @@ if __name__ == "__main__":
           f"{url}", flush=True)  # the date tells one run's lines in app.log from the next
     check_my_files()  # files put in the folder while the app was closed
     threading.Thread(target=auto_check_updates, daemon=True).start()
+    if setup_plan():  # quit in the middle of the first-run downloads: carry on where they stopped
+        threading.Thread(target=run_setup, daemon=True).start()
     try:
         if headless or use_browser:
             if use_browser:

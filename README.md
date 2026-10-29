@@ -41,10 +41,11 @@ your computer and internet speed (the biggest AI model is 80 GB); you only click
 ## Uninstall
 
 Delete the app, then these folders: the AI models, in `~/.ollama/models` (shared with any other Ollama on the
-computer, so keep it if you use Ollama elsewhere), and the library, in `~/Survival LLM Library`. Your own files are in
-`~/Survival LLM Files`; keep that folder if you want them. The app's own
-settings are in `~/Library/Application Support/Survival LLM` on a Mac, and in `%APPDATA%\Survival LLM` plus the
-AI engine in `%LOCALAPPDATA%\Survival LLM` on Windows.
+computer, so keep it if you use Ollama elsewhere), and the library. The app's Library window (Search library, then
+Switch or move the library) shows where the library is: in `~/Survival LLM Library` if you installed it before 0.4, otherwise
+in the app's settings folder unless you moved it. Your own files are in `~/Survival LLM Files` unless you picked
+another folder; keep it if you want them. The app's own settings are in `~/Library/Application Support/Survival LLM`
+on a Mac, and in `%APPDATA%\Survival LLM` plus the AI engine and library in `%LOCALAPPDATA%\Survival LLM` on Windows.
 
 ## Which model your computer gets
 
@@ -132,7 +133,9 @@ python3 app/server.py --browser                     # in your web browser instea
 python3 chat.py "How long is fridge food safe in a blackout?"   # terminal; --model NAME picks a model
 ```
 
-The library is looked up at `$SURVIVAL_LLM_LIBRARY`, then `~/Survival LLM Library`, then `library.noindex/` next to the code.
+The library is looked up at `$SURVIVAL_LLM_LIBRARY`, then the folder picked in the app (`library_dir` in its
+`settings.json`), then `~/Survival LLM Library`, then `library.noindex/` next to the code; a new one goes in the app's
+settings folder (`Library.noindex` on a Mac, `%LOCALAPPDATA%\Survival LLM\Library` on Windows).
 Without a built-in engine, the app uses an Ollama you have installed (`ollama serve`).
 
 `python3 tests/run_all.py` checks memory and the handling of what models write (forget requests, notes about different

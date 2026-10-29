@@ -635,6 +635,9 @@ def main():
         print("optimizing index", flush=True)
         db.execute("INSERT INTO fts(fts) VALUES('optimize')")
         db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    if sys.argv[1:2] == ["--rebuild"]:  # the dropped sources' pages stay in the file, and in a pack's zip, until this
+        print("compacting index", flush=True)
+        db.execute("VACUUM")
     try:  # one self-contained file, so read-only copies (packs, read-only disks) open cleanly
         db.execute("PRAGMA journal_mode=DELETE")
     except sqlite3.OperationalError:

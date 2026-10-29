@@ -459,9 +459,14 @@ def chat_events(model, library, messages, reasoning="off", caps=None, length="no
             answer = moved
         named = cited_sources(answer)
         unopened = made_up(named)
-        if not named or unopened:
+        # "OK, I'll forget where you live." answers a request, not a question: no "from its own knowledge" line. Only
+        # when the message asks nothing else and the reply reads as a short acknowledgment ("Remember my son weighs
+        # 16 kg. how much Tylenol can he have" still gets the line).
+        just_memory = not named and not read and not looked and not earlier and asked_memory(question) \
+            and not INFO_ASK.search(question) and ACKNOWLEDGED.search(answer.replace("’", "'")) and len(answer) < 300
+        if (not named or unopened) and not just_memory:
             answer = _with_sources_line(answer, line)
-        elif any(_known_ids(item, by_id) for item in named):  # named by id, which means nothing to the person
+        elif named and any(_known_ids(item, by_id) for item in named):  # named by id, meaningless to the person
             answer = _with_sources_line(answer, "Sources: " + "; ".join(_titled(item, by_id) for item in named))
         # "(ids 1403312, 1400192, etc.)" in the text goes; "(ID 4471203)" from the person's insurance card doesn't.
         block, pool = _sources_block(answer), known | ids | {s["id"] for s in read_before if s.get("id") is not None}
@@ -721,11 +726,16 @@ def _opened(item, read, read_before=(), opened_ids=()):
         return True
     text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", item)  # a Markdown link: its text, not its address
     text = re.sub(r"https?://\S+", " ", text).strip(" *_.\"'“”‘’")
-    variants = [(text, text)]  # (what names the source, the text whose closing parentheses must fit)
-    variants += [(text.split(sep, 1)[0],) * 2 for sep in (" – ", " — ", " - ") if sep in text]  # after a dash: a description
-    if ": " in text:  # a colon may be part of the title, so the full item's parentheses still count
-        variants.append((text.split(": ", 1)[0], text))
     articles = list(read) + list(read_before)
+    collections = [_content_words(a["source"]) for a in articles]
+    # "WikEM: ACE inhibitor dose table": before the colon or dash is just a collection's name, so what comes after
+    # names the article, and has to be one it opened (a made-up title passed the check in the 0.3.0 Windows test).
+    collection_only = lambda head: bool(_content_words(head)) and any(_content_words(head) <= c for c in collections)  # noqa: E731
+    variants = [(text, text)]  # (what names the source, the text whose closing parentheses must fit)
+    variants += [(text.split(sep, 1)[0],) * 2 for sep in (" – ", " — ", " - ")  # after a dash: a description
+                 if sep in text and not collection_only(text.split(sep, 1)[0])]
+    if ": " in text and not collection_only(text.split(": ", 1)[0]):  # a colon may be part of the title, so the
+        variants.append((text.split(": ", 1)[0], text))                 # full item's parentheses still count
     if any(_names_article(v.strip(" \"'“”‘’"), a, articles, full) for v, full in variants for a in articles):
         return True
     parts = [p for p in _split_outside_brackets(text, (", ", " and ", " & ")) if p.strip()]
@@ -742,6 +752,13 @@ def _read_earlier(messages):
             if parsed:
                 found.append({"title": parsed.group(1), "source": parsed.group(2)})
     return found
+
+
+# A message that asks for information as well as "remember this", and a reply that only acknowledges a memory request.
+INFO_ASK = re.compile(r"\?|\b(how (much|many|long|often|do|does|can|should)|what|which|tell me|explain|is it safe|safe "
+                      r"to|can (i|he|she|we|they|you)|should (i|he|she|we|they)|doses?|dosage)\b", re.I)
+ACKNOWLEDGED = re.compile(r"\b(i'll remember|i will remember|i've noted|noted|got it|i'll keep|i've saved|saved|"
+                          r"i've forgotten|forgotten|i'll forget|deleted|removed|no longer|won't remember)\b", re.I)
 
 
 def _with_sources_line(answer, line):

@@ -126,8 +126,10 @@
       and unzip it. On Windows, right-click the zip and choose <em>Extract All</em>.</li>
     <li><strong>Open it.</strong> On a Mac, double-click <em>Survival LLM</em>. On Windows, open the extracted folder and
       double-click <em>Survival LLM.bat</em>.</li>
-    <li><strong>Follow the setup.</strong> The app opens in its own window and downloads the AI engine (built into the Mac
-      app), the AI model that fits your computer, and the library. Let it finish while you're online.</li>
+    <li><strong>Follow the setup.</strong> Pick a library and an AI model on one screen (the best model for your computer
+      is already picked) and click <em>Download</em>. The app downloads the model, the library and, on Windows, the AI
+      engine (it's built into the Mac app). If your internet drops or you quit, it picks up where it left off. Let it
+      finish while you're online.</li>
   </ol>
   <div class="callout">
     <strong>The first time you open it,</strong> your computer warns you, because the app isn't sold through an app store.
@@ -172,6 +174,27 @@
   <h2 id="updates">Update notes</h2>
   <p>Already have it? Click <em>Check for updates</em> at the bottom of the app.</p>
   <div class="update">
+    <h3>0.4.0 <span class="date">October 29, 2026</span></h3>
+    <ul>
+      <li><strong>Simpler first-time setup:</strong> one screen to pick the library and the AI model, with the best
+        model for your computer already picked. While it downloads, you see the speed and the time left for each part.
+        It keeps the computer awake, retries by itself when the internet drops, and picks up where it left off if you
+        quit.</li>
+      <li><strong>Switch libraries:</strong> click the article count at the top (or <em>Search library</em>, then
+        <em>Switch or move the library</em>) to change between Essentials and Everything. Your library keeps working
+        while the other one downloads. Thanks to jubishop for the idea.</li>
+      <li><strong>Choose where things live:</strong> move the library to another folder or an external drive, and pick
+        which folder <em>Your files</em> searches. New installs keep the library out of sight in the app's own folder;
+        existing ones stay where they are. Thanks to Kronopath and remjax.</li>
+      <li><strong>A cleaner library:</strong> both libraries were rebuilt without about 2,700 repeated pages, so
+        searches show more different articles. If you already have one, the app offers the new version (1.3 GB for
+        Essentials, 8.7 GB for Everything), and yours keeps working until it's in. Thanks to ahalekelly.</li>
+      <li>If a model download fails because an older Ollama app is running on your computer, the app now says so and
+        what to do, and the message fits on screen. Thanks to zackbloom.</li>
+      <li>Smaller fixes: a reply to "remember this" or "forget that" no longer gets a Sources line, a made-up article
+        title next to a real collection's name is caught, and an answer that never finished no longer says "reasoning
+        before it answered".</li>
+    </ul>
     <h3>0.3.4 <span class="date">October 27, 2026</span></h3>
     <ul>
       <li><strong>Reasoning setting:</strong> next to Send, choose how much the AI may think before it answers: Off,

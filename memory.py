@@ -386,9 +386,16 @@ class Memory:
         return self._settings().get("memory_ai_writes", True) is not False
 
     def set_ai_writes(self, on):
+        self.set_setting("memory_ai_writes", bool(on))
+
+    def set_setting(self, key, value):
+        """Keep one of the app's settings in the same file (None removes it), such as a folder the person picked."""
         with self.lock:
             data = self._settings()
-            data["memory_ai_writes"] = bool(on)
+            if value is None:
+                data.pop(key, None)
+            else:
+                data[key] = value
             _write_file(self.settings_path, json.dumps(data, indent=1))
 
     # ---- the person's edits ----

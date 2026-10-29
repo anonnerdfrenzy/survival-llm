@@ -5,6 +5,10 @@
                       If it is already open, it restarts, so it picks up your changes.
   bin/dev --fresh     open it the way a brand-new person sees it: no library, memory, files or settings (your AI
                       models are still there). Every --fresh start begins from nothing again.
+  bin/dev --new-user  --fresh, and the AI models on this Mac count as not downloaded either, so you go through the
+                      whole first-run setup. "Downloading" a model you have takes seconds; one you don't is real.
+  bin/dev --new-user --keep  (or --fresh --keep) open that copy again as you left it, instead of from nothing: to
+                      see a setup you quit halfway carry on
   bin/dev --release   build the Mac app exactly as it ships (packaging/build.sh mac) and run that build instead
   bin/dev --rebuild   build Survival LLM Dev again before opening it
   bin/dev --test no-answer       force a case, to try it with a real model: every answer comes out blank, so the
@@ -136,7 +140,7 @@ def main():
         del args[at:at + 2]
         if not re.fullmatch(r"no-answer|think-limit=\d+", test):
             sys.exit("--test takes no-answer or think-limit=N, for example --test think-limit=60")
-    if set(args) - {"--fresh", "--release", "--rebuild", "--own-engine", "stop", "reset", "log"}:
+    if set(args) - {"--fresh", "--new-user", "--keep", "--release", "--rebuild", "--own-engine", "stop", "reset", "log"}:
         sys.exit(__doc__)
     if "log" in args:
         os.execvp("tail", ["tail", "-n", "40", "-f", LOGS[DEV_APP]])
@@ -146,10 +150,9 @@ def main():
             shutil.rmtree(PROFILE)
             print(f"Deleted the dev copy's settings, memory and files ({PROFILE}).")
         return
-    fresh = "--fresh" in args
+    fresh = "--fresh" in args or "--new-user" in args
     profile = FRESH if fresh else PROFILE
-    env = {"SURVIVAL_LLM_APP_DIR": FRESH, "SURVIVAL_LLM_FILES": os.path.join(FRESH, "files"),
-           "SURVIVAL_LLM_LIBRARY": os.path.join(FRESH, "library")} if fresh else {}
+    env = {"SURVIVAL_LLM_APP_DIR": FRESH} if fresh else {}  # its folders come from its settings (written below)
     if "--release" in args:  # built before the running copy quits, so a failed build leaves it open
         subprocess.run([os.path.join(REPO, "packaging", "build.sh"), "mac"], check=True)
         app = RELEASE_APP
@@ -161,13 +164,31 @@ def main():
         app = DEV_APP
     if test:
         env["SURVIVAL_LLM_TEST"] = test
+    if "--new-user" in args:
+        env["SURVIVAL_LLM_NEW_USER"] = "1"
     if "--own-engine" in args:  # no Ollama answers on this port, so the app starts the engine it carries
         env.update(OLLAMA_HOST="127.0.0.1:11499", OLLAMA_NOPRUNE="1")  # NOPRUNE: a second engine mustn't prune models
     stop()
-    if fresh:
+    if fresh and "--keep" not in args:
         shutil.rmtree(FRESH, ignore_errors=True)
+    if fresh:
+        # The fresh copy's library and files folders, as if picked in the app (unless a move already changed them),
+        # so a move made while trying it stays moved after --keep, where environment variables would override it.
+        os.makedirs(FRESH, exist_ok=True)
+        path = os.path.join(FRESH, "settings.json")
+        try:
+            with open(path) as f:
+                settings = json.load(f)
+        except (OSError, ValueError):
+            settings = {}
+        settings.setdefault("library_dir", os.path.join(FRESH, "library"))
+        settings.setdefault("files_dir", os.path.join(FRESH, "files"))
+        with open(path, "w") as f:
+            json.dump(settings, f, indent=1)
     print(f"Opening {'the release build' if app == RELEASE_APP else 'Survival LLM Dev'}: {label()}"
-          + (" (fresh: no library, memory, files or settings)" if fresh else "")
+          + (" (the same fresh copy, as you left it)" if fresh and "--keep" in args
+             else " (new user: no library, models, memory, files or settings)" if "--new-user" in args
+             else " (fresh: no library, memory, files or settings)" if fresh else "")
           + (f" (test: {test})" if test else "") + (" (its own engine)" if "--own-engine" in args else ""))
     start(app, profile, env)
 
