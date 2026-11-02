@@ -162,14 +162,27 @@ class Library:
         parts, size, next_id = [], 0, None
         for pid, offset, length in self.db.execute(
                 "SELECT id, offset, length FROM passages WHERE doc_id=? AND id>=? ORDER BY id", (doc_id, passage_id)):
-            if parts and size + length > max_chars:
+            text = self._read(file_id, offset, length)
+            separator = 2 if parts else 0
+            remaining = max_chars - size - separator
+            if parts and len(text) > remaining:
+                # Use the available space instead of dropping the next passage altogether.
+                if remaining > 0:
+                    cut = text.rfind("\n", 0, remaining + 1)
+                    if cut <= 0:
+                        cut = text.rfind(" ", 0, remaining + 1)
+                    if cut <= 0:
+                        cut = remaining
+                    excerpt = text[:cut].rstrip()
+                    if excerpt:
+                        parts.append(excerpt)
+                        size += separator + len(excerpt)
                 next_id = pid
                 break
-            parts.append(self._read(file_id, offset, length))
-            size += length
+            parts.append(text)
+            size += separator + len(text)
         return {"title": title, "source": label, "url": url, "official": key in OFFICIAL_LABEL,
                 "text": "\n\n".join(parts), "next_id": next_id}
-
 
     def document(self, passage_id):
         """The whole article holding a passage, split into passages so a viewer can mark the cited one."""
