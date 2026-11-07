@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Install Survival LLM on Linux from this folder: a Python environment for the app window, a "Survival LLM" entry
+# in the desktop's app menu, and a survival-llm command. The app runs the code in this folder, so `git pull`
+# updates it. The AI engine (Ollama), the model and the library are downloaded by the app's own setup.
+#
+#   bin/install-linux               install (run it again any time; it only adds what is missing)
+#   bin/install-linux --uninstall   remove the menu entry, command and environment (not your library, files or models)
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV="$HERE/.venv-app"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+BIN="$HOME/.local/bin"
+DESKTOP="$DATA/applications/survival-llm.desktop"
+ICON="$DATA/icons/hicolor/scalable/apps/survival-llm.svg"
+
+if [ "${1:-}" = "--uninstall" ]; then
+  rm -rf "$VENV"
+  rm -f "$DESKTOP" "$ICON" "$BIN/survival-llm"
+  command -v update-desktop-database >/dev/null && update-desktop-database "$DATA/applications" 2>/dev/null || true
+  echo "Removed the menu entry, the survival-llm command and $VENV."
+  echo "Still there (delete them yourself if you want): your settings and memory in ~/.survival-llm (the library is"
+  echo "in its Library folder unless you moved it), your files in ~/Survival LLM Files, the AI engine in"
+  echo "$DATA/survival-llm, and the AI models in ~/.ollama/models."
+  exit 0
+fi
+
+PY="$(command -v python3 || true)"
+if [ -z "$PY" ] || ! "$PY" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+  echo "Survival LLM needs Python 3.11 or newer (python3). Install it with your package manager first." >&2
+  exit 1
+fi
+
+# The app window is pywebview, which on Linux shows the page with the system's GTK WebKit. That comes from the
+# distribution, not pip, so the environment can see the system's packages.
+if ! "$PY" -c 'import gi; gi.require_version("Gtk", "3.0"); from gi.repository import Gtk
+for v in ("4.1", "4.0"):
+    try:
+        gi.require_version("WebKit2", v); break
+    except ValueError: pass
+else: raise SystemExit(1)
+from gi.repository import WebKit2' 2>/dev/null; then
+  echo "Note: no GTK WebKit for Python found, so Survival LLM will open in your web browser instead of its own"
+  echo "window. For the window, install it and run this again:"
+  echo "  Debian, Ubuntu, Mint:  sudo apt install python3-gi gir1.2-webkit2-4.1"
+  echo "  Fedora:                sudo dnf install python3-gobject webkit2gtk4.1"
+  echo "  Arch:                  sudo pacman -S python-gobject webkit2gtk-4.1"
+  echo
+fi
+command -v zstd >/dev/null || echo "Note: install zstd (sudo apt install zstd) so the app can unpack the AI engine it downloads."
+
+if [ ! -x "$VENV/bin/python" ]; then
+  "$PY" -m venv --system-site-packages "$VENV"
+fi
+"$VENV/bin/python" -m pip install --quiet --upgrade pip
+"$VENV/bin/python" -m pip install --quiet pywebview pypdf truststore
+
+mkdir -p "$BIN" "$(dirname "$DESKTOP")" "$(dirname "$ICON")"
+cp "$HERE/packaging/survival-llm.svg" "$ICON"
+cat > "$BIN/survival-llm" <<EOF
+#!/bin/sh
+# Survival LLM, run from $HERE (bin/install-linux wrote this)
+cd "\$HOME" && exec "$VENV/bin/python" "$HERE/app/server.py" "\$@"
+EOF
+chmod +x "$BIN/survival-llm"
+cat > "$DESKTOP" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Survival LLM
+GenericName=Offline survival assistant
+GenericName[nl]=Offline overlevingsassistent
+Comment=Offline AI assistant and survival library
+Comment[nl]=Offline AI-assistent en overlevingsbibliotheek
+Exec="$BIN/survival-llm"
+Icon=survival-llm
+Terminal=false
+Categories=Utility;
+Keywords=survival;emergency;first aid;offline;AI;overleven;noodgeval;EHBO;
+StartupWMClass=Survival LLM
+EOF
+command -v update-desktop-database >/dev/null && update-desktop-database "$DATA/applications" 2>/dev/null || true
+
+echo "Installed. Open Survival LLM from your app menu, or run: survival-llm"
+case ":$PATH:" in *":$BIN:"*) ;; *) echo "($BIN is not on your PATH, so the command needs its full path: $BIN/survival-llm)";; esac
+echo "Its setup downloads the AI engine, a model and the library. To add the Dutch Agorisme wiki afterwards,"
+echo "click Library at the top of the window."

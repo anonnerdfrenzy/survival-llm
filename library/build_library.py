@@ -3,8 +3,11 @@
 Usage: .venv/bin/python library/build_library.py [--public | --lite] [--rebuild KEY ...]
 Re-run any time: sources already indexed are skipped, so new downloads just get added.
 --rebuild drops the named sources (e.g. wikem) first so they are converted again.
+--only KEY,... builds just those sources. --quick skips the final index optimizing and compacting, for adding a
+small source to a big library (both take long and need free space the size of the index).
 --public builds only what may be redistributed; --lite also leaves out Wikipedia and iFixit.
-Set LIBRARY_OUT=DIR to build somewhere other than library.noindex (e.g. a public pack).
+Set LIBRARY_OUT=DIR to build somewhere other than library.noindex (e.g. a public pack, or an installed library:
+LIBRARY_OUT=~/.survival-llm/Library ... --only agorismewiki adds just that source to the library the app uses).
 Writes library.noindex/text/<source>/NNNN.md (plain-text Markdown shards of about 16 MB)
 and library.noindex/index.sqlite (SQLite FTS5 over ~1,500-character passages).
 """
@@ -24,7 +27,8 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from library.passages import split_passages  # noqa: E402
+from library import writer  # noqa: E402
+from library.addons import ADDONS  # noqa: E402
 
 SRC = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "library.noindex"))
 LIB = os.path.abspath(os.environ.get("LIBRARY_OUT", SRC))  # where the text and index go
@@ -36,9 +40,9 @@ WIKIHOW_CSV = os.path.join(RAW_DIR, "wikihowAll.csv")
 ARGS = sys.argv[1:]
 PUBLIC = "--public" in ARGS  # only what we may redistribute (see SOURCES.md)
 LITE = "--lite" in ARGS      # public, minus the big general-reference sources
-NOT_PUBLIC = {"post-disaster", "water", "food-prep", "medical-library", "knots"}
+NOT_PUBLIC = {"post-disaster", "water", "food-prep", "medical-library", "knots",
+              "agorismewiki"}  # states no license: personal builds only (see SOURCES.md)
 NOT_LITE = {"wikipedia", "ifixit"}
-SHARD_BYTES = 16 * 1024 * 1024
 MIN_CHARS = 300
 
 # ZIM file name (minus the date) -> (key, label shown to the model, topic, kind, URL prefix)
@@ -71,6 +75,8 @@ PDF_SOURCES = {
     "survival-manuals": ("U.S. government survival and first-aid manuals", "emergency", "manuals/us-gov"),
     "first-aid-guides": ("IFRC and WHO first-aid and emergency care guides", "medical", "manuals/nc"),
     "risk": ("Risk and micromort references", "medical", "risk"),  # from library/fetch_risk.py
+    # Dutch, from library/fetch_agorismewiki.py (also an add-on the app installs itself: library/addons.py)
+    "agorismewiki": (ADDONS["agorismewiki"]["label"], ADDONS["agorismewiki"]["topic"], "agorismewiki"),
 }
 SE_SITES = {
     "diy": ("Home Improvement Q&A", "repair"),
@@ -116,6 +122,7 @@ LICENSES = {
     "risk": f"U.S. government statistics (SSA, CDC, NHTSA, NWS): public domain. Wikipedia articles: {CC_BY_SA}",
     "first-aid-guides": "IFRC guidelines: non-commercial use with acknowledgement. WHO publications: CC BY-NC-SA 3.0 IGO "
                         "https://creativecommons.org/licenses/by-nc-sa/3.0/igo/ (WHO does not endorse this app)",
+    "agorismewiki": ADDONS["agorismewiki"]["license"],
     **{f"se-{site}": "CC BY-SA 2.5, 3.0 or 4.0 by post date, the authors named with each post "
                      "https://stackoverflow.com/help/licensing" for site in SE_SITES},
 }
@@ -434,7 +441,7 @@ def manual_docs(folder):
         if len(text) >= MIN_CHARS:
             yield item["title"], item["url"], text
         else:
-            print(f"    no text layer (needs OCR): {item['title']}", flush=True)
+            print(f"    too short, or no text layer (needs OCR): {item['title']}", flush=True)
 
 
 def wikihow_docs(path):
@@ -461,73 +468,12 @@ def wikihow_docs(path):
 
 # ---------- writing shards and the index ----------
 
-class SourceWriter:
-    def __init__(self, db, source_id, key, label):
-        self.db, self.source_id, self.label = db, source_id, label
-        self.dir = os.path.join(TEXT_DIR, key)
-        shutil.rmtree(self.dir, ignore_errors=True)
-        os.makedirs(self.dir)
-        self.key, self.shard, self.f, self.pos, self.file_id, self.docs = key, -1, None, 0, None, 0
-
-    def _next_shard(self):
-        if self.f:
-            self.f.close()
-        self.shard += 1
-        rel = f"{self.key}/{self.shard:04d}.md"
-        self.f = open(os.path.join(TEXT_DIR, rel), "wb")
-        self.pos = 0
-        self.file_id = self.db.execute("INSERT INTO files(path) VALUES(?)", (rel,)).lastrowid
-
-    def _write(self, s):
-        b = s.encode("utf-8")
-        self.f.write(b)
-        self.pos += len(b)
-        return len(b)
-
-    def add(self, title, url, text):
-        if self.f is None or self.pos > SHARD_BYTES:
-            self._next_shard()
-        start = self.pos
-        self._write(f"# {title}\nSource: {self.label}" + (f" | {url}" if url else "") + "\n\n")
-        passages = []
-        for heading, chunk in split_passages(text):
-            offset = self.pos
-            passages.append((offset, self._write(chunk), heading, chunk))
-            self._write("\n\n")
-        self._write("---\n\n")
-        doc_id = self.db.execute(
-            "INSERT INTO docs(source_id, title, url, file_id, offset, length) VALUES(?,?,?,?,?,?)",
-            (self.source_id, title, url, self.file_id, start, self.pos - start)).lastrowid
-        for offset, length, heading, chunk in passages:
-            pid = self.db.execute("INSERT INTO passages(doc_id, offset, length) VALUES(?,?,?)",
-                                  (doc_id, offset, length)).lastrowid
-            self.db.execute("INSERT INTO fts(rowid, title, body) VALUES(?,?,?)",
-                            (pid, f"{title} {heading}".strip(), chunk))
-        self.docs += 1
-
-    def close(self):
-        if self.f:
-            self.f.close()
+def SourceWriter(db, source_id, key, label):
+    return writer.SourceWriter(db, source_id, key, label, TEXT_DIR)
 
 
 def open_db():
-    db = sqlite3.connect(DB_PATH, isolation_level=None)
-    db.executescript("""
-        PRAGMA journal_mode=WAL;
-        PRAGMA synchronous=OFF;
-        CREATE TABLE IF NOT EXISTS sources(id INTEGER PRIMARY KEY, key TEXT UNIQUE, label TEXT, topic TEXT,
-                                           origin TEXT, docs INT DEFAULT 0, done INT DEFAULT 0, license TEXT);
-        CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, path TEXT UNIQUE);
-        CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY, source_id INT, title TEXT, url TEXT,
-                                        file_id INT, offset INT, length INT);
-        CREATE INDEX IF NOT EXISTS docs_title ON docs(title COLLATE NOCASE);
-        CREATE TABLE IF NOT EXISTS passages(id INTEGER PRIMARY KEY, doc_id INT, offset INT, length INT);
-        CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(title, body, content='', contentless_delete=1,
-                                                          tokenize='porter unicode61 remove_diacritics 2');
-    """)
-    if "license" not in [c[1] for c in db.execute("PRAGMA table_info(sources)")]:
-        db.execute("ALTER TABLE sources ADD COLUMN license TEXT")  # libraries built before licenses were kept
-    return db
+    return writer.open_db(DB_PATH)
 
 
 ONLY = set(ARGS[ARGS.index("--only") + 1].split(",")) if "--only" in ARGS else None  # e.g. for test packs
@@ -583,17 +529,7 @@ def build_source(db, key, label, topic, origin, docs_iter):
 
 def drop_source(db, key):
     """Remove one source from the index and disk so the next build redoes it."""
-    row = db.execute("SELECT id FROM sources WHERE key=?", (key,)).fetchone()
-    if row:
-        db.execute("BEGIN")
-        db.execute("DELETE FROM fts WHERE rowid IN (SELECT p.id FROM passages p JOIN docs d ON d.id = p.doc_id "
-                   "WHERE d.source_id=?)", row)
-        db.execute("DELETE FROM passages WHERE doc_id IN (SELECT id FROM docs WHERE source_id=?)", row)
-        db.execute("DELETE FROM files WHERE id IN (SELECT DISTINCT file_id FROM docs WHERE source_id=?)", row)
-        db.execute("DELETE FROM docs WHERE source_id=?", row)
-        db.execute("DELETE FROM sources WHERE id=?", row)
-        db.execute("COMMIT")
-    shutil.rmtree(os.path.join(TEXT_DIR, key), ignore_errors=True)
+    writer.drop_source(db, key, TEXT_DIR)
     print(f"dropped {key}", flush=True)
 
 
@@ -606,8 +542,12 @@ def main():
     except BlockingIOError:
         sys.exit("another build is already running")
     db = open_db()
-    if sys.argv[1:2] == ["--rebuild"]:  # e.g. --rebuild wikem cdc-travel
+    rebuild = []
+    if sys.argv[1:2] == ["--rebuild"]:  # e.g. --rebuild wikem cdc-travel [--only ...]
         for key in sys.argv[2:]:
+            if key.startswith("--"):
+                break
+            rebuild.append(key)
             drop_source(db, key)
     changed = False
     if os.path.exists(WIKIHOW_CSV):
@@ -631,11 +571,14 @@ def main():
         changed |= build_source(db, key, label, topic, path, docs)
     for key, text in LICENSES.items():
         db.execute("UPDATE sources SET license=? WHERE key=?", (text, key))
-    if changed:
+    quick = "--quick" in ARGS
+    if changed and not quick:
         print("optimizing index", flush=True)
         db.execute("INSERT INTO fts(fts) VALUES('optimize')")
         db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    if sys.argv[1:2] == ["--rebuild"]:  # the dropped sources' pages stay in the file, and in a pack's zip, until this
+    if changed and quick:
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    if rebuild and not quick:  # the dropped sources' pages stay in the file, and in a pack's zip, until this
         print("compacting index", flush=True)
         db.execute("VACUUM")
     try:  # one self-contained file, so read-only copies (packs, read-only disks) open cleanly

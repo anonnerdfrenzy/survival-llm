@@ -5,3 +5,4 @@ library.noindex/
 dist/
 packaging/cache/
 .DS_Store
+.venv-app/

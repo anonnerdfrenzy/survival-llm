@@ -235,9 +235,10 @@ function modelRows(container, { onlyFitting = false } = {}) {
     row.innerHTML = `<div class="mr-main">
         <div class="mr-title">${esc(c.name)} <span class="mr-maker">by ${esc(c.maker)}</span>
           ${c.recommended ? '<span class="badge">Recommended for this computer</span>' : ""}
-          ${current ? '<span class="badge inuse">In use</span>' : ""}</div>
+          ${current ? '<span class="badge inuse">In use</span>' : ""}
+          ${c.untested ? '<span class="badge untested">Not tested yet</span>' : ""}</div>
         <div class="mr-blurb">${esc(c.blurb)}</div>
-        <div class="mr-meta">${c.installed ? "Downloaded" : `${c.gb} GB download`} · ${memory}</div>
+        <div class="mr-meta">${c.installed ? "Downloaded" : `${c.gb} GB download`} · ${memory}${c.slow_here && c.fits ? ` · ${slowText(c)}` : ""}</div>
       </div><div class="mr-action"></div>`;
     const action = row.querySelector(".mr-action");
     const button = (label, cls, onclick, disabled = false) => {
@@ -284,10 +285,24 @@ function modelRows(container, { onlyFitting = false } = {}) {
   if (focusedKey) container.querySelector(`.model-row[data-key="${CSS.escape(focusedKey)}"] button`)?.focus();
 }
 
+// A model that would be slow on this PC: it isn't a mixture of experts and doesn't fit in the graphics card's memory.
+function slowText(c) {
+  const gpu = state.machine.gpu;
+  return gpu?.usable ? `slow here: needs about ${c.vram_need} GB of graphics memory, the card has ${gpu.vram_gb} GB`
+    : "slow here: the AI engine can't use this computer's graphics card";
+}
+function gpuText() {  // the graphics card, for the setup screen and the Models window
+  const gpu = state.machine.gpu;
+  if (state.machine.os === "macOS") return "";  // Apple Silicon shares its memory with graphics: RAM says it all
+  if (!gpu) return " No graphics card found, so models run from main memory.";
+  const card = gpu.name || { nvidia: "NVIDIA", amd: "AMD", intel: "Intel" }[gpu.vendor] || "Unknown";
+  return ` Graphics card: ${card} with ${gpu.vram_gb} GB of memory`
+    + (gpu.usable ? ", which the AI uses." : ", which the AI engine can't use, so models run from main memory.");
+}
 function renderModels() {
   const engine = state.engine?.running;
   els.modelsIntro.textContent = `This ${state.machine.os} computer has ${state.machine.ram_gb} GB of memory (RAM) and `
-    + `${state.disk_free_gb} GB of free disk space. Bigger models know more but need more memory and are slower. `
+    + `${state.disk_free_gb} GB of free disk space.${gpuText()} Bigger models know more but need more memory and are slower. `
     + "Download while you have internet, and leave Survival LLM open until it finishes; an interrupted download picks up where it left off."
     + (engine ? ` AI engine: Ollama ${engine.version}, ${engine.ours ? "built into Survival LLM" : "the Ollama app running on this computer"}.` : "");
   modelRows(els.modelsList);
@@ -436,10 +451,11 @@ function chooseView(s) {
       const why = m.slow ? `Needs ${m.min_ram} GB of memory and this computer has ${s.machine.ram_gb} GB, so answers will be slow`
         : !m.fits ? `Needs ${m.min_ram} GB of memory (RAM); this computer has ${s.machine.ram_gb} GB`
         : !m.fits_disk && !m.installed ? `Needs ${m.gb + 5} GB of free disk space; this computer has ${s.disk_free_gb} GB`
+        : m.slow_here ? cap(slowText(m))
         : m.installed ? "Already on this computer" : `${cap(timeText((m.gb * 1e9) / TYPICAL_SPEED))} to download`
           + (m.preview_cached ? " (seconds in this preview: it's on this Mac)" : "");
       return option("model", m.model, m.model === choice.model && m.pickable, m.pickable, `<span class="ob-name">${esc(m.name)}</span>
-        <span class="ob-size">${m.installed ? "" : sizeText(m.gb)}</span>${m.recommended ? ' <span class="badge">Best for this computer</span>' : ""}
+        <span class="ob-size">${m.installed ? "" : sizeText(m.gb)}</span>${m.recommended ? ' <span class="badge">Best for this computer</span>' : ""}${m.untested ? ' <span class="badge untested">Not tested yet</span>' : ""}
         <span class="ob-about">${esc(m.blurb)}</span>
         <span class="ob-meta">${why} · by ${esc(m.maker)}</span>`);
     };
@@ -459,6 +475,7 @@ function chooseView(s) {
     } else if (engineGB) {
       ai += `<p class="meta">Includes the AI engine that runs it on this computer (${sizeText(engineGB)}).</p>`;
     }
+    ai = `<p class="meta ob-machine">This computer has ${s.machine.ram_gb} GB of memory (RAM).${esc(gpuText())}</p>` + ai;
   }
 
   const waitEngine = aiUnknown && s.ollama_starting;
@@ -647,6 +664,7 @@ async function changeSetup() {
 // ---------- the Library window: which pack is installed, the other one, and where it's kept (#4, #9) ----------
 const libraryDialog = $("library-dialog");
 let librarySig = "", libraryNote = null;  // libraryNote: {text, error} about the last move
+let sourcesOpen = false;                   // "Sources in this library" is unfolded
 const packName = (id) => packNames[id]?.name || { lite: "Essentials", full: "Everything" }[id] || id;
 
 function openLibrary(keepNote = false) {
@@ -674,6 +692,19 @@ function renderLibrary() {
       <button class="ghost" type="button" id="lib-move"${otherBusy ? " disabled" : ""}>${lib ? "Move it…" : "Keep it somewhere else…"}</button></p>
       <p class="meta">${lib ? "Move it to another folder or an external drive. If that folder already holds a library, Survival LLM uses that one instead." : "Pick where the library goes before you download it, an external drive for instance."}</p>`;
   }
+  // The installed pack, downloaded again: to repair a damaged library or start over.
+  const mine = (s.packs || []).find((p) => p.id === lib?.pack);
+  if (mine) {
+    const job = jobFor(`library:${mine.id}`), fits = mine.disk_gb + 5 <= s.disk_free_gb;
+    if (busyJob(job)) {
+      html += progressHTML(job, `Downloading ${esc(mine.name)} again`, `${mine.name} download`);
+    } else {
+      html += `${job?.status === "error" ? `<p class="error">${esc(job.error)}</p>` : ""}
+        <p class="lib-actions"><button class="ghost" type="button" data-again="${esc(mine.id)}"${fits && !otherBusy ? "" : " disabled"}>
+          ${isArmed(`again:${mine.id}`) ? "Click again to download it" : `Download ${esc(mine.name)} again (${sizeText(mine.gb)})`}</button></p>
+        <p class="meta">A fresh copy, for a damaged library or to start over. Extra sources you added come back by themselves.</p>`;
+    }
+  }
   const others = (s.packs || []).filter((p) => p.id !== lib?.pack);
   for (const p of others) {
     const job = jobFor(`library:${p.id}`), fits = p.disk_gb + 5 <= s.disk_free_gb;
@@ -694,6 +725,31 @@ function renderLibrary() {
       : s.packs_error === "unavailable" ? "The list of libraries isn't available right now. It checks again every minute."
       : "Getting the list of libraries…"}</p>`;
   }
+  // Extra sources (library/addons.py), downloaded from their own websites into this library.
+  if ((s.addons || []).length) {
+    html += `<h3>Extra sources</h3><p class="meta">Downloaded from their own websites and added to your library. They
+      aren't in the library downloads.</p>`;
+    for (const a of s.addons) {
+      const job = jobFor(`library:addon:${a.id}`), on = a.articles > 0;
+      html += `<div class="addon"><h4>${esc(a.name)} <span class="badge">${esc(a.language.toUpperCase())}</span></h4>
+        <p class="meta">${esc(a.about)} ${esc(a.note)}</p>`;
+      if (busyJob(job)) {
+        html += `<p class="meta">${job.status === "unpacking" ? `Adding ${esc(a.name)} to the library…` : `Downloading ${esc(a.name)}…`}</p>`;
+      } else {
+        if (job?.status === "error") html += `<p class="error">${esc(job.error)}</p>`;
+        html += on
+          ? `<p class="meta">In your library: ${a.articles.toLocaleString()} articles.</p>
+             <p class="lib-actions"><button class="ghost" type="button" data-addon="${esc(a.id)}"${otherBusy ? " disabled" : ""}>Update</button>
+             <button class="ghost" type="button" data-addon-remove="${esc(a.id)}"${otherBusy ? " disabled" : ""}>${isArmed(`remove:${a.id}`) ? "Click again to remove it" : "Remove"}</button></p>`
+          : `<p class="lib-actions"><button class="${lib ? "primary" : "ghost"}" type="button" data-addon="${esc(a.id)}"${lib && !otherBusy ? "" : " disabled"}>Add ${esc(a.name)}</button></p>`;
+      }
+      html += `</div>`;
+    }
+  }
+  if (lib?.list?.length) {
+    html += `<details class="lib-sources" id="lib-sources"${sourcesOpen ? " open" : ""}><summary>Sources in this library (${lib.list.length})</summary>
+      <ul>${lib.list.map((x) => `<li><span data-no-tr>${esc(x.label)}</span> · <span class="meta">${x.docs.toLocaleString()} articles</span></li>`).join("")}</ul></details>`;
+  }
   if (html === librarySig) return;  // rebuilding an unchanged window would knock keyboard focus off its buttons
   librarySig = html;
   const focusedId = document.activeElement?.id;
@@ -707,7 +763,32 @@ function renderLibrary() {
       else arm(key, () => { librarySig = ""; renderLibrary(); });
     };
   }
+  for (const b of $("library-body").querySelectorAll("button[data-again]")) {
+    const key = `again:${b.dataset.again}`;
+    b.onclick = () => {
+      if (isArmed(key)) { armedKey = ""; startLibraryDownload(b.dataset.again); }
+      else arm(key, () => { librarySig = ""; renderLibrary(); });
+    };
+  }
+  for (const b of $("library-body").querySelectorAll("button[data-addon]")) b.onclick = () => addonJob(b.dataset.addon, false);
+  for (const b of $("library-body").querySelectorAll("button[data-addon-remove]")) {
+    const key = `remove:${b.dataset.addonRemove}`;
+    b.onclick = () => {
+      if (isArmed(key)) { armedKey = ""; addonJob(b.dataset.addonRemove, true); }
+      else arm(key, () => { librarySig = ""; renderLibrary(); });
+    };
+  }
+  if ($("lib-sources")) $("lib-sources").ontoggle = (e) => { sourcesOpen = e.currentTarget.open; };
   if (focusedId && $(focusedId)) $(focusedId).focus();
+}
+
+async function addonJob(id, remove) {
+  try {
+    const resp = await api("/api/library/addon", { method: "POST", body: JSON.stringify({ id, remove }) });
+    if (!resp.ok) announce((await resp.json().catch(() => ({}))).error || "Couldn't start that.");
+  } catch { /* the status poll shows any problem */ }
+  librarySig = "";
+  loadStatus();
 }
 
 function renderReaderLibrary() {
@@ -748,6 +829,7 @@ async function moveLibrary() {
 }
 
 $("close-library").onclick = () => libraryDialog.close();
+$("library-manage").onclick = () => openLibrary();
 libraryDialog.onclick = (e) => { if (e.target === libraryDialog) libraryDialog.close(); };
 els.status.addEventListener("click", (e) => {
   if (e.target.id === "status-library") openLibrary();
@@ -1569,6 +1651,18 @@ $("quit").onclick = async (e) => {
   clearTimeout(pollTimer);
   document.body.innerHTML = `<div class="welcome" style="max-width:640px;margin:10vh auto;padding:0 16px">
     <h1>Survival LLM has stopped.</h1><p>You can close this window. Open Survival LLM again to start it.</p></div>`;
+};
+// ---------- language: the interface (i18n.js) and the language the AI answers in ----------
+$("language").value = window.i18n.lang;
+$("language").onchange = async (e) => {
+  const lang = e.target.value;
+  try {
+    const resp = await api("/api/language", { method: "POST", body: JSON.stringify({ language: lang }) });
+    if (!resp.ok) throw new Error();
+  } catch { e.target.value = window.i18n.lang; return; }
+  window.i18n.set(lang);
+  setupSig = librarySig = updatesSig = filesSig = "";  // redraw the windows that keep what they last showed
+  loadStatus();
 };
 loadStatus();
 els.input.focus();

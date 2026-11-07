@@ -304,6 +304,15 @@ textarea:focus { border-color: var(--accent); }
 .composer-note { margin: 0 auto 8px !important; padding: 8px 12px; border-radius: 10px; font-size: 14px;
   background: var(--cite); border: 1px solid var(--cite-line); }
 .footnote { color: var(--muted); font-size: 12.5px; margin: 6px auto 0 !important; text-align: center; }
+.lang-pick { white-space: nowrap; }
+.addon { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+.addon h4 { margin: 4px 0; font-size: 15px; }
+.lib-sources { margin-top: 14px; }
+.lib-sources summary { cursor: pointer; }
+.lib-sources ul { margin: 6px 0 0; padding-left: 18px; font-size: 14px; }
+.badge.untested { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.lang-pick select { font: inherit; padding: 0 2px; margin-left: 2px; color: var(--muted); background: transparent;
+  border: 1px solid var(--line); border-radius: 6px; }
 details.how { color: var(--muted); font-size: 14px; margin-bottom: 6px; }
 details.how summary { cursor: pointer; }
 details.how .activity { margin: 4px 0 0 14px; }

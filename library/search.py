@@ -75,6 +75,11 @@ hers herself him himself his how i if in into is it its itself just me more most
 once only or other our ours ourselves out over own same she should so some such than that the their theirs them
 themselves then there these they this those through to too under until up very was we were what when where which
 while who whom why will with would you your yours yourself yourselves""".split())
+# Dutch filler words, for questions asked in Dutch (minus words that mean something in English, like "die" and "door").
+STOPWORDS |= set("""aan al als ben bij dan dat de deze dit doe doen een en er geen had heb hebben hem het hier hij
+hoe hun ik in is je jij jou jouw kan kun kunnen maar me men met mij mijn moet moeten na naar niet nog nu of om ons onze
+ook op te tegen toch tot u uit uw van veel voor waar waarom wanneer wat we wel welk welke werd wie wij wil worden wordt
+zal ze zelf zich zij zijn zo zou""".split())
 
 
 def use_folder(path):
@@ -98,6 +103,11 @@ class Library:
         sources, docs = self.db.execute(
             "SELECT COUNT(*), COALESCE(SUM(docs), 0) FROM sources WHERE done=1").fetchone()
         return docs, sources
+
+    def sources(self):
+        """The indexed sources, largest first: [{"key", "label", "docs", "official"}], for the Library window."""
+        return [{"key": k, "label": label, "docs": docs, "official": k in OFFICIAL_LABEL} for k, label, docs in
+                self.db.execute("SELECT key, label, docs FROM sources WHERE done=1 ORDER BY docs DESC")]
 
     def labels(self):
         """Names of the indexed sources, largest first, for telling the model what it can search."""

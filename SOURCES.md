@@ -39,6 +39,11 @@ wants to use the library commercially should rebuild it without them.
 
 ## Left out on purpose
 
+- The Agorisme wiki ([agorismewiki.nl](https://agorismewiki.nl), Dutch: self-sufficiency, food storage, water, energy,
+  local economy), from its public repository (`library/fetch_agorismewiki.py`). The site and repository state no
+  license (checked 2026-11-07), so it is for personal builds only and never in `--public` or `--lite` packs, until its
+  authors give permission. Add it to your own library from the app's Library window (Extra sources), or with `fetch_agorismewiki.py --install`.
+
 - MedlinePlus sections licensed to NLM by third parties: the A.D.A.M. Medical Encyclopedia
   (`/ency/`), ASHP drug information (`/druginfo/meds/`) and Natural Medicines (`/druginfo/natural/`).
   A default (personal) build includes them; `--public` and `--lite` builds, the only ones that are shared,
