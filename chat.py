@@ -1,6 +1,6 @@
 """Terminal chat with a local model that can search the offline library.
 
-Usage: chat.py [--model NAME] [question ...]   (default: the first chat model Ollama has)
+Usage: chat.py [--model NAME] [--dutch] [question ...]   (default: the first chat model Ollama has; --dutch: answers in Dutch)
 With a question it answers once and exits; without one it opens a chat.
 In a chat: /sources lists what the last answer used, /open N opens one, /reasoning shows its reasoning, /new,
 /think off|short|medium|long|none sets how much it may reason before answering, /limit normal|long|none sets how long
@@ -12,6 +12,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import core  # noqa: E402
 from core import LENGTH_LIMITS, REASONING_LIMITS, capabilities, chat_events, installed_models, system_prompt, trim  # noqa: E402
 from library.search import DB_PATH, Library  # noqa: E402
 
@@ -97,6 +98,9 @@ def main():
     model = None
     if args[:1] == ["--model"]:
         model, args = args[1], args[2:]
+    if args[:1] == ["--dutch"]:
+        core.set_language("nl")
+        args = args[1:]
     if not model:
         names = [m for m in installed_models() or [] if not any(x in m for x in ("embed", "bge-", "nomic", "minilm"))]
         if not names:
@@ -111,7 +115,8 @@ def main():
         except Exception:
             library = None
     caps = capabilities(model)
-    messages = [{"role": "system", "content": system_prompt(library, "tools" in caps)}]
+    lang = core.LANGUAGE_PROMPTS.get(core.language[0])
+    messages = [{"role": "system", "content": system_prompt(library, "tools" in caps) + (f"\n\n{lang}" if lang else "")}]
     level, length = "off", "normal"  # the Reasoning setting, and the length limit
 
     if args:  # one question, one answer

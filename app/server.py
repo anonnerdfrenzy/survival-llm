@@ -11,7 +11,9 @@ import ctypes
 import datetime
 import errno
 import filecmp
+import glob
 import hashlib
+import html
 import http.client
 import io
 import json
@@ -27,9 +29,11 @@ import ssl
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import weakref
@@ -40,8 +44,9 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+import core  # noqa: E402
 from core import HOST, capabilities, chat_events, installed_models, system_prompt, trim  # noqa: E402
-from library import myfiles, search  # noqa: E402
+from library import addons, myfiles, search  # noqa: E402
 from memory import MAX_CHARS as MEMORY_MAX, Memory, parse as parse_notes, prompt_section, size as notes_size  # noqa: E402
 from library.search import DB_PATH, LIB, TOPICS, Library  # noqa: E402
 
@@ -59,10 +64,12 @@ TOKEN = secrets.token_urlsafe(16)
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
         ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
 
-# Models the app offers. mac/win are Ollama names; min_ram is total memory in GB; gb is the download size.
+# Models the app offers. mac/win are Ollama names; min_ram is total memory in GB; gb is the download size. moe: a
+# mixture of experts, of which only a few billion parameters work on each word, so it stays quick on a PC even when it
+# doesn't fit in the graphics card's memory; the others are only quick on a PC when they do (see gpu_info).
 # Picks and blurbs come from evals/retrieval_eval.py (22 blackout and first-aid questions answered with the library).
 CATALOG = [
-    {"key": "nemotron-super", "name": "Nemotron 3.5 Super", "maker": "NVIDIA", "min_ram": 128,
+    {"key": "nemotron-super", "name": "Nemotron 3.5 Super", "maker": "NVIDIA", "min_ram": 128, "moe": True,
      "mac": "nemotron-3.5-super:120b-a12b-nvfp4", "win": "nemotron-3.5-super:120b-a12b", "gb": {"mac": 80, "win": 90},
      "blurb": {"mac": "The smartest option: knows the most and is the least likely to make things up. Quick on Apple Silicon.",
                "win": "The smartest option: knows the most and is the least likely to make things up. Needs a powerful PC."}},
@@ -70,7 +77,7 @@ CATALOG = [
      "mac": "qwen3.8:27b-mlx", "win": "qwen3.8:27b", "gb": {"mac": 18, "win": 18},
      "blurb": {"mac": "Careful and thorough: looks things up for every question. A great fit for 32-64 GB Macs.",
                "win": "Careful and thorough, but slow unless your PC has a graphics card with 24 GB of memory."}},
-    {"key": "nemotron-lightning", "name": "Nemotron 3.5 Lightning", "maker": "NVIDIA", "min_ram": 32,
+    {"key": "nemotron-lightning", "name": "Nemotron 3.5 Lightning", "maker": "NVIDIA", "min_ram": 32, "moe": True,
      "mac": "nemotron-3.5-lightning:30b-a3b-nvfp4", "win": "nemotron-3.5-lightning:30b-a3b", "gb": {"mac": 19, "win": 25},
      "blurb": {"mac": "The fastest: answers in a few seconds and saves battery. Sometimes misses details.",
                "win": "The best choice for most PCs: accurate and careful. Expect up to a minute per answer "
@@ -87,13 +94,25 @@ CATALOG = [
                       "so check what it says.",
                "win": "Small and very fast, for 16 GB computers. Often answers from memory instead of the library, "
                       "so check what it says."}},
+    # Not in the evals yet (tested: False): offered for trying, never recommended. Both are mixtures of experts.
+    {"key": "gpt-oss-20b", "name": "gpt-oss 20B", "maker": "OpenAI", "min_ram": 16, "moe": True, "tested": False,
+     "mac": "gpt-oss:20b", "win": "gpt-oss:20b", "gb": {"mac": 14, "win": 14},
+     "blurb": {k: "Not tested with Survival LLM yet. Quick for its size: only about 3.6 billion of its 21 billion "
+                  "parameters work on each word. Strongest in English." for k in ("mac", "win")}},
+    {"key": "qwen3-30b-a3b", "name": "Qwen3 30B-A3B", "maker": "Alibaba", "min_ram": 32, "moe": True, "tested": False,
+     "mac": "qwen3:30b-a3b", "win": "qwen3:30b-a3b", "gb": {"mac": 19, "win": 19},
+     "blurb": {k: "Not tested with Survival LLM yet. As quick as Nemotron Lightning (about 3 billion parameters work "
+                  "on each word), and Qwen models are good at languages other than English, Dutch included."
+               for k in ("mac", "win")}},
 ]
 # Order = what to recommend first, from the blind-judged tests in evals/ (README "How the models did").
 # Granite 4.2 3B was dropped: 5 of its 22 test answers could hurt someone, 2 of them fatally.
 # Nemotron Super needs 128 GB: macOS lets the GPU use about three quarters of memory, and the model is 80 GB.
 # Windows doesn't get it: its 90 GB build would run mostly on the processor, far too slowly.
-PREFERENCE = {"mac": ["nemotron-super", "qwen-27b", "nemotron-lightning", "granite-8b", "gemma-e4b"],
-              "win": ["nemotron-lightning", "qwen-27b", "granite-8b", "gemma-e4b"]}
+# Untested models come last, so one is never recommended over a model that passed the evals.
+PREFERENCE = {"mac": ["nemotron-super", "qwen-27b", "nemotron-lightning", "granite-8b", "gemma-e4b",
+                      "gpt-oss-20b", "qwen3-30b-a3b"],
+              "win": ["nemotron-lightning", "qwen-27b", "granite-8b", "gemma-e4b", "gpt-oss-20b", "qwen3-30b-a3b"]}
 ALIASES = {"granite4.2": "granite-8b"}  # granite4.2:latest is the same 8B model
 NOT_CHAT = ("embed", "bge-", "nomic", "minilm")
 DISK_MARGIN_GB = 5  # keep this much free after a download
@@ -130,6 +149,48 @@ def save_failed(exc, path):
     if os.name == "nt" and isinstance(exc, PermissionError):  # Windows refuses while another program has it open
         return f"Couldn't save: another program is using {path}. Close it and try again."
     return f"Couldn't save {path}: {getattr(exc, 'strerror', None) or exc}."
+
+
+def system_language():
+    """The computer's language when the app speaks it (core.LANGUAGES), else "en": the language until they pick one."""
+    names = [os.environ.get(k, "") for k in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE")]
+    try:
+        import locale
+        names.append(locale.getlocale()[0] or "")
+        if os.name == "nt":  # Windows: the display language, e.g. 0x0413 Dutch (Netherlands), 0x0813 Dutch (Belgium)
+            names.append(locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), ""))
+    except Exception:
+        pass
+    first = next((n for n in names if n and n not in ("C", "POSIX") and not n.startswith("C.")), "").lower()
+    for code, info in core.LANGUAGES.items():  # "nl_NL.UTF-8", "nl", or Windows' "Dutch_Netherlands"
+        if re.match(rf"{code}(?:[_.@:-]|$)", first) or first.startswith(info["english"].lower()):
+            return code
+    return "en"
+
+
+def interface_languages():
+    """The languages the app speaks that also have their interface pack (English needs none)."""
+    return [c for c in core.LANGUAGES if c == "en" or os.path.isfile(os.path.join(STATIC, f"lang-{c}.js"))]
+
+
+def language_options():
+    """The Language menu's choices, each named in its own language."""
+    return "".join(f'<option value="{c}" lang="{c}" data-no-tr>{html.escape(core.LANGUAGES[c]["name"])}</option>'
+                   for c in interface_languages())
+
+
+def language_scripts():
+    """The interface packs, all loaded so switching is instant (they are small)."""
+    return "".join(f'<script src="/static/lang-{c}.js"></script>' for c in interface_languages() if c != "en")
+
+
+def chosen_language():
+    """The app's language: the person's choice (settings.json "language"), else the computer's."""
+    lang = MEMORY._settings().get("language")
+    return lang if lang in core.LANGUAGES else system_language()
+
+
+core.set_language(chosen_language())
 MAX_UPLOAD = 4 * 1024 ** 3
 my_files_checked = [0.0]  # when the folder was last looked at
 
@@ -144,14 +205,34 @@ updates = {"data": None, "checked": 0.0, "error": None}
 
 # The app's own Ollama. The Mac app carries it (Resources/ollama, next to the app code). On Windows it is 1.6 GB
 # with its graphics-card libraries, so it is downloaded on first use instead; build.sh writes engine.json with its
-# address and checksum. An Ollama that is already running is used as is.
+# address and checksum. Linux downloads it on first use too (LINUX_ENGINES below, as run from source has no
+# engine.json), into ~/.local/share/survival-llm. An Ollama that is already running is used as is.
 if sys.platform == "darwin":
     ENGINE = os.path.join(os.path.dirname(ROOT), "ollama", "ollama")
 elif os.name == "nt":
     ENGINE = os.path.join(os.environ.get("LOCALAPPDATA") or APP_DIR, "Survival LLM", "ollama", "ollama.exe")
-else:
-    ENGINE = None
+else:  # Linux: Ollama's archive holds bin/ollama and lib/ollama (its graphics-card libraries)
+    ENGINE = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share"),
+                          "survival-llm", "ollama", "bin", "ollama")
+ENGINE_DIR = os.path.dirname(ENGINE) if os.name == "nt" or sys.platform == "darwin" else \
+    os.path.dirname(os.path.dirname(ENGINE))  # the folder an engine download unpacks into
 ENGINE_INFO = os.path.join(ROOT, "engine.json")
+# Ollama for Linux, the version packaging/build.sh gives the Mac and Windows apps, checked against Ollama's published
+# sha256sum.txt. Keep it in step with OLLAMA_VERSION there. (AMD graphics cards need Ollama's separate ROCm download:
+# install Ollama from ollama.com for those; the app uses an Ollama that is installed or running.)
+LINUX_ENGINES = {
+    "x86_64": {"url": "https://github.com/ollama/ollama/releases/download/v0.40.11/ollama-linux-amd64.tar.zst",
+               "bytes": 1508659610, "version": "v0.40.11",
+               "sha256": "7bedab90dd122661be78798e9f0edf37fccf0cccf2699d2c58ea1a3afdc04b6d"},
+    "aarch64": {"url": "https://github.com/ollama/ollama/releases/download/v0.40.11/ollama-linux-arm64.tar.zst",
+                "bytes": 1564235434, "version": "v0.40.11",
+                "sha256": "77b278837b9e62c172f77d703675be4c52c8054e9075639031a9a6d5a53f1924"},
+}
+# AMD graphics cards need Ollama's ROCm libraries, a separate download unpacked over the first (lib/ollama/rocm_*).
+LINUX_ENGINES["x86_64"]["rocm"] = {
+    "url": "https://github.com/ollama/ollama/releases/download/v0.40.11/ollama-linux-amd64-rocm.tar.zst",
+    "bytes": 1052144765, "sha256": "0e45493c905b781108cdce1986dfcdb629b29c829f326ded12fc4abde1299d8e"}
+LINUX_ENGINES["amd64"], LINUX_ENGINES["arm64"] = LINUX_ENGINES["x86_64"], LINUX_ENGINES["aarch64"]
 
 
 def _read_version():
@@ -293,7 +374,7 @@ def my_name(path):
 
 
 def to_trash(path):
-    """Move a file to the Trash (Mac) or Recycle Bin (Windows), so removing one of their files can be undone."""
+    """Move a file to the Trash (Mac, Linux) or Recycle Bin (Windows), so removing one of their files can be undone."""
     if sys.platform == "darwin":
         try:
             from Foundation import NSURL, NSFileManager  # part of pywebview's macOS dependencies
@@ -312,7 +393,38 @@ def to_trash(path):
         subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], check=True, timeout=60,
                        env={**os.environ, "SURVIVAL_LLM_TRASH": path}, creationflags=0x08000000)  # no console window
     else:
-        os.remove(path)
+        linux_trash(path)
+
+
+def linux_trash(path):
+    """The desktop's own Trash (gio, as the file manager uses), else the freedesktop.org Trash in the home folder."""
+    if shutil.which("gio"):
+        try:
+            subprocess.run(["gio", "trash", "--", path], check=True, capture_output=True, timeout=60)
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass  # no Trash on that disk, say: do it by hand below
+    trash = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share"),
+                         "Trash")
+    os.makedirs(os.path.join(trash, "files"), exist_ok=True)
+    os.makedirs(os.path.join(trash, "info"), exist_ok=True)
+    base, ext = os.path.splitext(os.path.basename(path))
+    name, n = base + ext, 1
+    while True:  # claim a name in info/ first, as the spec asks, so two removals never pick the same one
+        try:
+            fd = os.open(os.path.join(trash, "info", name + ".trashinfo"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError:
+            n += 1
+            name = f"{base}.{n}{ext}"
+    with os.fdopen(fd, "w") as f:
+        f.write(f"[Trash Info]\nPath={urllib.parse.quote(os.path.abspath(path))}\n"
+                f"DeletionDate={datetime.datetime.now():%Y-%m-%dT%H:%M:%S}\n")
+    try:
+        shutil.move(path, os.path.join(trash, "files", name))
+    except OSError:
+        os.remove(os.path.join(trash, "info", name + ".trashinfo"))
+        raise
 
 
 def open_folder(path):
@@ -338,6 +450,110 @@ def ram_gb():
         ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
         return round(status.ullTotalPhys / 2**30)
     return round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30)
+
+
+_gpu = []  # cached: the card doesn't change while the app runs
+
+
+def gpu_info():
+    """The graphics card with the most memory of its own, as {"vendor", "name", "vram_gb", "usable"}, or None: a Mac
+    (its memory is shared, so RAM already says it all), a computer without one, or one this couldn't read. "usable":
+    the AI engine runs on it (NVIDIA; AMD on Linux, where the app adds Ollama's ROCm libraries, or with an Ollama the
+    person installed). Cards under 2 GB, like the ones built into processors, don't count."""
+    if _gpu:
+        return _gpu[0]
+    cards = []  # (vendor, name, bytes)
+    if sys.platform != "darwin":
+        try:  # NVIDIA, Windows and Linux: its driver comes with nvidia-smi
+            out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                                 capture_output=True, text=True, timeout=10,
+                                 **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+            for line in out.stdout.splitlines():
+                name, _, mib = line.rpartition(",")
+                if mib.strip().isdigit():
+                    cards.append(("nvidia", name.strip(), int(mib) * 2**20))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if sys.platform.startswith("linux"):  # AMD and Intel: the kernel says how much memory the card has
+        vendors = {"0x1002": "amd", "0x10de": "nvidia", "0x8086": "intel"}
+        for dev in glob.glob("/sys/class/drm/card[0-9]*/device"):
+            if "-" in os.path.basename(os.path.dirname(dev)):
+                continue  # a connector (card1-HDMI-A-1), not a card
+            try:
+                with open(os.path.join(dev, "vendor")) as f:
+                    vendor = vendors.get(f.read().strip(), "other")
+                with open(os.path.join(dev, "mem_info_vram_total")) as f:
+                    size = int(f.read().strip())
+                cards.append((vendor, pci_name(dev), size))
+            except (OSError, ValueError):
+                pass
+    if os.name == "nt":  # any card: what its driver told Windows
+        try:
+            import winreg
+            base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as root:
+                for n in range(winreg.QueryInfoKey(root)[0]):
+                    try:
+                        with winreg.OpenKey(root, winreg.EnumKey(root, n)) as k:
+                            size = int(winreg.QueryValueEx(k, "HardwareInformation.qwMemorySize")[0])
+                            name = str(winreg.QueryValueEx(k, "DriverDesc")[0])
+                    except (OSError, ValueError):
+                        continue
+                    low = name.lower()
+                    vendor = "nvidia" if "nvidia" in low else "amd" if ("amd" in low or "radeon" in low) else \
+                        "intel" if "intel" in low else "other"
+                    cards.append((vendor, name, size))
+        except Exception:
+            pass
+    cards = [c for c in cards if c[2] >= 2 * 2**30]
+    best = max(cards, key=lambda c: c[2]) if cards else None
+    if best:
+        vendor, name, size = best
+        # On Windows the app's own engine has no AMD libraries; the Ollama app from ollama.com does.
+        installed_ollama = os.name == "nt" and ollama_locations()[1] not in (None, ENGINE)
+        usable = vendor == "nvidia" or (vendor == "amd" and (sys.platform.startswith("linux") or installed_ollama))
+        best = {"vendor": vendor, "name": name, "vram_gb": round(size / 2**30), "usable": usable}
+    _gpu.append(best)
+    return best
+
+
+def pci_name(dev):
+    """A card's marketing name from the system's PCI database ("AMD Radeon RX 7700 XT / 7800 XT"), or ""."""
+    try:
+        with open(os.path.join(dev, "vendor")) as f:
+            vendor = f.read().strip().removeprefix("0x").lower()
+        with open(os.path.join(dev, "device")) as f:
+            device = f.read().strip().removeprefix("0x").lower()
+    except OSError:
+        return ""
+    for db in ("/usr/share/hwdata/pci.ids", "/usr/share/misc/pci.ids", "/usr/share/pci.ids"):
+        try:
+            with open(db, encoding="utf-8", errors="replace") as f:
+                inside = False
+                for line in f:
+                    if line.startswith("#") or not line.strip():
+                        continue  # comments sit between a vendor's devices too
+                    if not line.startswith("\t"):
+                        inside = line.startswith(vendor + " ")
+                    elif inside and line.startswith(f"\t{device} "):
+                        name = line.strip()[len(device):].strip()  # "Navi 32 [Radeon RX 7700 XT / 7800 XT]"
+                        name = re.search(r"\[(.+)\]", name).group(1) if "[" in name else name
+                        maker = {"1002": "AMD", "10de": "NVIDIA", "8086": "Intel"}.get(vendor, "")
+                        return f"{maker} {name}".strip()
+        except (OSError, AttributeError):
+            continue
+    return ""
+
+
+def quick_here(c, gb, gpu):
+    """Whether a catalog model answers at a good speed on this PC: True, False, or None when that can't be told (a
+    Mac, or no graphics card found). A mixture of experts is quick from main memory too; the others need to fit in
+    the graphics card's memory, with about 2 GB to spare for the conversation."""
+    if system_key() == "mac" or gpu is None:
+        return None
+    if c.get("moe"):
+        return True
+    return gpu["usable"] and gb + 2 <= gpu["vram_gb"]
 
 
 def disk_free_bytes(path=None):
@@ -367,6 +583,7 @@ def disk_free_gb(path=None):
 
 
 def system_key():
+    """Which builds of the models fit: Apple Silicon's ("mac"), or the GGUF builds for Windows and Linux ("win")."""
     return "mac" if sys.platform == "darwin" else "win"
 
 
@@ -380,7 +597,7 @@ def catalog_entry(model):
 
 def machine_catalog(installed):
     """Catalog entries for this computer, marked with what fits its memory and disk, and what is installed."""
-    ram, disk, sys_key = ram_gb(), disk_free_gb(), system_key()
+    ram, disk, sys_key, gpu = ram_gb(), disk_free_gb(), system_key(), gpu_info()
     rows = []
     for key in PREFERENCE[sys_key]:
         c = next(c for c in CATALOG if c["key"] == key)
@@ -389,8 +606,13 @@ def machine_catalog(installed):
         rows.append({"key": key, "name": c["name"], "maker": c["maker"], "blurb": c["blurb"][sys_key],
                      "model": local_names[0] if local_names else c[sys_key], "gb": gb, "min_ram": c["min_ram"],
                      "fits": c["min_ram"] <= ram, "fits_disk": bool(local_names) or gb + DISK_MARGIN_GB <= disk,
-                     "installed": bool(local_names), "recommended": False})
-    best = next((r for r in rows if r["fits"] and r["fits_disk"]), None)
+                     "installed": bool(local_names), "recommended": False,
+                     "slow_here": quick_here(c, gb, gpu) is False, "vram_need": gb + 2,
+                     "untested": c.get("tested") is False})
+    # The first that fits and is quick here; when none is quick, the first that fits, as before.
+    fitting = [r for r in rows if r["fits"] and r["fits_disk"]]
+    fitting = [r for r in fitting if not r["untested"]]
+    best = next((r for r in fitting if not r["slow_here"]), fitting[0] if fitting else None)
     if best:
         best["recommended"] = True
     return rows
@@ -448,8 +670,8 @@ def ollama_locations():
         base = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama")
         apps = [os.path.join(base, "ollama app.exe")]
         bins = [ENGINE, os.path.join(base, "ollama.exe"), shutil.which("ollama")]
-    else:
-        apps, bins = [], [shutil.which("ollama")]
+    else:  # Linux: the app's own download, else an installed Ollama (ollama.com's script puts it in /usr/local/bin)
+        apps, bins = [], [ENGINE, "/usr/local/bin/ollama", "/usr/bin/ollama", shutil.which("ollama")]
     app = next((a for a in apps if a and os.path.exists(a)), None)
     binary = next((b for b in bins if b and os.path.exists(b)), None)
     return app, binary
@@ -506,7 +728,18 @@ def engine_info():
         with open(ENGINE_INFO) as f:
             return json.load(f)
     except (OSError, ValueError):
-        return None
+        pass
+    if sys.platform.startswith("linux"):
+        info = LINUX_ENGINES.get(platform.machine().lower())
+        if info and (gpu_info() or {}).get("vendor") == "amd" and info.get("rocm"):  # so it uses the AMD card
+            return {**info, "addons": [info["rocm"]]}
+        return info
+    return None
+
+
+def engine_bytes(info):
+    """The whole engine download: the engine and any add-on (ROCm for AMD cards)."""
+    return info["bytes"] + sum(a["bytes"] for a in info.get("addons", []))
 
 
 engine_versions = {"own": [], "running": (0.0, None)}  # cached: this app's engine, and the running one (checked at most every 60 s)
@@ -767,30 +1000,58 @@ def _sha256(path):
 
 
 def engine_worker(key):
-    """Download and unpack the app's own Ollama (Windows), then start it."""
+    """Download and unpack the app's own Ollama (Windows, Linux), then start it."""
     info = engine_info()
     if not info or not ENGINE:
         raise RuntimeError("This version of the app can't download the AI engine. Install Ollama from ollama.com.")
-    need = info["bytes"] * 2.5 / 1e9 + DISK_MARGIN_GB  # the zip plus its unpacked copy, briefly at the same time
+    total = engine_bytes(info)
+    need = total * 2.5 / 1e9 + DISK_MARGIN_GB  # the download plus its unpacked copy, briefly at the same time
     if need > disk_free_gb():
         raise RuntimeError(f"Not enough free disk space: installing the AI engine needs about {need:.0f} GB free, "
                            f"and this computer has {disk_free_gb()} GB.")
-    folder = os.path.dirname(ENGINE)
-    zip_path, partial = folder + ".zip", folder + ".partial"
+    folder = ENGINE_DIR
+    tarball = info["url"].endswith(".tar.zst")
+    zip_path, partial = folder + (".tar.zst" if tarball else ".zip"), folder + ".partial"
     os.makedirs(os.path.dirname(folder), exist_ok=True)
-    _download(key, info["url"], zip_path, info["bytes"])
-    if _sha256(zip_path) != info["sha256"]:
-        os.remove(zip_path)
-        raise RuntimeError("The AI engine download was damaged in transit. Try again.")
-    _update(key, status="unpacking", completed=info["bytes"], total=info["bytes"])
+    parts, done = [(info, zip_path)], 0
+    parts += [(a, f"{folder}-addon{n}.tar.zst") for n, a in enumerate(info.get("addons", []))]
+    for part, path in parts:
+        _download(key, part["url"], path, part["bytes"], done_before=done, total=total)
+        if _sha256(path) != part["sha256"]:
+            os.remove(path)
+            raise RuntimeError("The AI engine download was damaged in transit. Try again.")
+        done += part["bytes"]
+    _update(key, status="unpacking", completed=total, total=total)
     shutil.rmtree(partial, ignore_errors=True)
-    with zipfile.ZipFile(zip_path) as z:
-        z.extractall(partial)
+    for part, path in parts:  # add-ons unpack over the engine, into the same folders
+        if path.endswith(".tar.zst"):
+            unpack_tar_zst(path, partial)
+        else:
+            with zipfile.ZipFile(path) as z:
+                z.extractall(partial)
     shutil.rmtree(folder, ignore_errors=True)
     os.replace(partial, folder)
-    os.remove(zip_path)
+    for _, path in parts:
+        os.remove(path)
     ollama_started_at[0] = 0
     start_ollama()
+
+
+def unpack_tar_zst(path, dest):
+    """Unpack Ollama's Linux download: with Python's own zstd (3.14 and newer), else GNU tar and the zstd program."""
+    os.makedirs(dest, exist_ok=True)  # an add-on unpacks over the engine
+    try:
+        with tarfile.open(path, "r:zst") as tar:
+            tar.extractall(dest, filter="data")
+        return
+    except (tarfile.CompressionError, tarfile.ReadError, ValueError):
+        pass  # this Python has no zstd
+    try:
+        subprocess.run(["tar", "--zstd", "-xf", path, "-C", dest], check=True, capture_output=True, timeout=1800)
+    except (OSError, subprocess.SubprocessError):
+        shutil.rmtree(dest, ignore_errors=True)
+        raise RuntimeError("Couldn't unpack the AI engine: that needs the zstd program. Install it (for example "
+                           "sudo apt install zstd, or sudo dnf install zstd) and try again.")
 
 
 class PackParts(io.RawIOBase):
@@ -921,6 +1182,86 @@ def library_worker(key, pack_id):
         lib_version[0] += 1
     shutil.rmtree(old, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
+    readd_addons(key)
+
+
+def chosen_addons():
+    """The extra sources the person added (settings.json "addons"), to add again after a new library pack."""
+    keep = MEMORY._settings().get("addons")
+    return [a for a in keep if a in addons.ADDONS] if isinstance(keep, list) else []
+
+
+def remember_addon(key, added):
+    keep = [a for a in chosen_addons() if a != key] + ([key] if added else [])
+    MEMORY.set_setting("addons", keep or None)
+
+
+def readd_addons(job):
+    """A new pack replaced the library folder, and with it the extra sources: add them again. One that can't be
+    downloaded now (offline) is left out, and offered again in the Library window; the pack itself is in."""
+    for key in chosen_addons():
+        if job in downloads:
+            _update(job, status="unpacking", addon=addons.ADDONS[key]["name"])
+        try:
+            add_addon(key, addons.download(key))
+        except Exception as exc:
+            print(f"Couldn't add {key} again after the library update: {exc}", flush=True)
+
+
+def add_addon(key, articles):
+    """Write an add-on into the library, with every open copy of the index closed meanwhile (a second or two)."""
+    with lib_lock:
+        lib_version[0] += 1
+        for lib in list(open_libs):
+            try:
+                lib.db.close()
+            except Exception:
+                pass
+        try:
+            return addons.install(LIB, key, articles)
+        except sqlite3.OperationalError as exc:
+            raise RuntimeError(f"Couldn't add it to the library ({exc}). Is the library on a read-only drive?") from None
+        finally:
+            lib_version[0] += 1
+            refresh_prompts()  # the AI's instructions list the library's sources
+
+
+def addon_worker(key, addon_id, action):
+    """Add, update or remove one extra source (library/addons.py) in the installed library."""
+    if not os.path.exists(DB_PATH):
+        raise RuntimeError("Install a library first, then add extra sources to it.")
+    if action == "remove":
+        with lib_lock:
+            lib_version[0] += 1
+            for lib in list(open_libs):
+                try:
+                    lib.db.close()
+                except Exception:
+                    pass
+            try:
+                addons.remove(LIB, addon_id)
+            finally:
+                lib_version[0] += 1
+                refresh_prompts()
+        remember_addon(addon_id, False)
+        return
+    _update(key, status="downloading")
+    try:
+        articles = addons.download(addon_id)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:  # the site says how long it wants us to wait
+            try:
+                minutes = max(1, round(int(exc.headers.get("Retry-After")) / 60))
+            except (TypeError, ValueError, AttributeError):
+                minutes = None
+            raise RuntimeError("The website is busy (too many downloads from this internet connection). Try again in "
+                               + (f"about {minutes} minutes." if minutes else "a few minutes.")) from None
+        raise RuntimeError(f"The website answered with an error (HTTP {exc.code}). Try again later.") from None
+    except OSError:
+        raise RuntimeError("Couldn't reach the website. Check the internet connection.") from None
+    _update(key, status="unpacking")
+    add_addon(addon_id, articles)
+    remember_addon(addon_id, True)
 
 
 def warm_model(model):
@@ -1187,6 +1528,15 @@ def keep_awake():
     if os.name == "nt":  # for this thread, which runs the whole setup
         ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)  # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
         return lambda: ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+    if shutil.which("systemd-inhibit"):  # Linux with systemd: hold off idle sleep until this lets go (or the app ends)
+        try:
+            proc = subprocess.Popen(["systemd-inhibit", "--what=idle:sleep", "--who=Survival LLM",
+                                     "--why=Downloading the AI model or library", "--mode=block",
+                                     "tail", f"--pid={os.getpid()}", "-f", "/dev/null"],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            return lambda: None
+        return proc.terminate
     return lambda: None
 
 
@@ -1646,7 +1996,10 @@ class Handler(BaseHTTPRequestHandler):
                 data = f.read()
             if name == "index.html":
                 # Other websites cannot read this page (no CORS headers), so the token stays private.
-                data = data.replace(b"{{TOKEN}}", TOKEN.encode()).replace(b"{{PROFILE}}", PROFILE.encode())
+                data = data.replace(b"{{TOKEN}}", TOKEN.encode()).replace(b"{{PROFILE}}", PROFILE.encode()) \
+                    .replace(b"{{LANG}}", core.language[0].encode()) \
+                    .replace(b"{{LANG_OPTIONS}}", language_options().encode()) \
+                    .replace(b"{{LANG_SCRIPTS}}", language_scripts().encode())
             return self._send(200, data, MIME.get(os.path.splitext(name)[1], "application/octet-stream"))
         if not self._allowed():
             return self._send(403, {"error": "forbidden"})
@@ -1684,6 +2037,7 @@ class Handler(BaseHTTPRequestHandler):
         info = engine_info()
         lib = library()
         docs, sources = lib.stats() if lib else (0, 0)
+        listed = lib.main.sources() if lib and lib.main and docs else []
         mine = lib.mine.stats()[0] if lib and lib.mine else 0
         chat_models = [m.removesuffix(":latest") for m in models or [] if not any(x in m for x in NOT_CHAT)]
         catalog = machine_catalog(chat_models)
@@ -1696,14 +2050,18 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "ollama": models is not None, "ollama_installed": bool(app or binary), "ollama_starting": ollama_starting(),
             "engine": {"downloadable": bool(info and ENGINE and not (app or binary)),
-                       "gb": round(info["bytes"] / 1e9, 1) if info else None,
+                       "gb": round(engine_bytes(info) / 1e9, 1) if info else None,
                        "running": running_engine() if models is not None else None},
             "models": [{"model": m, "name": friendly_name(m), "tested": bool(catalog_entry(m))} for m in chat_models],
             "default_model": best or (chat_models or [None])[0],
             "loaded": loaded_models() if models is not None else [],
             "warming": [m for m, s in warming.items() if s == "loading"],
             "catalog": catalog, "downloads": jobs,
-            "library": {"articles": docs, "sources": sources, "pack": (installed_pack() or {}).get("id")} if docs else None,
+            "library": {"articles": docs, "sources": sources, "pack": (installed_pack() or {}).get("id"),
+                        "list": listed} if docs else None,
+            "addons": [{"id": k, "name": a["name"], "about": a["about"], "language": a["language"], "note": a["note"],
+                        "url": a["url"], "articles": next((x["docs"] for x in listed if x["key"] == k), 0)}
+                       for k, a in addons.ADDONS.items()],
             "packs": [pack_summary(p) for p in cached_packs()],
             "packs_error": "loading" if manifest["packs"] is None and manifest.get("fetching") else manifest["error"],
             "setup": setup_status(),
@@ -1713,8 +2071,9 @@ class Handler(BaseHTTPRequestHandler):
             "my_files": {"ready": mine, "busy": myfiles.progress["busy"]},
             "version": VERSION, "dev": DEV,
             "update": {"app": (newer_app() or {}).get("version"), "library": newer_library()},
-            "machine": {"os": "macOS" if sys.platform == "darwin" else platform.system(), "ram_gb": ram_gb()},
-            "topics": TOPICS}
+            "machine": {"os": "macOS" if sys.platform == "darwin" else platform.system(), "ram_gb": ram_gb(),
+                        "gpu": gpu_info()},
+            "topics": TOPICS, "language": core.language[0]}
 
     def do_POST(self):
         if not self._allowed():
@@ -1748,6 +2107,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(500, {"error": save_failed(exc, MEMORY.path)})
             refresh_prompts()
             return self._send(200, {"ok": True, "text": "\n".join(notes), "kept": kept, "dropped": dropped})
+        if url.path == "/api/language":  # the app's language, for its interface and the AI's answers
+            lang = str(body.get("language") or "")
+            if lang not in core.LANGUAGES:
+                return self._send(400, {"error": "unknown language"})
+            try:
+                MEMORY.set_setting("language", lang)
+            except OSError as exc:
+                return self._send(500, {"error": save_failed(exc, MEMORY.settings_path)})
+            core.set_language(lang)
+            refresh_prompts()  # open chats answer in it from the next question
+            return self._send(200, {"ok": True, "language": lang})
         if url.path == "/api/memory/ai-writes":  # the switch: may the AI add and change notes?
             try:
                 MEMORY.set_ai_writes(bool(body.get("on")))
@@ -1801,6 +2171,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(409, {"error": "Another library download or move is running. Wait for it to finish."})
             label = next((p["label"] for p in library_packs() if p["id"] == pack), pack)
             started = start_job(f"library:{pack}", label, library_worker, pack)
+            return self._send(200 if started else 409, {"ok": started})
+        if url.path == "/api/library/addon":  # add (or update) or remove an extra source: {"id", "remove"}
+            addon_id = str(body.get("id") or "")
+            if addon_id not in addons.ADDONS:
+                return self._send(400, {"error": "unknown source"})
+            busy = library_busy()
+            if busy:
+                return self._send(409, {"error": "Another library download or move is running. Wait for it to finish."})
+            action = "remove" if body.get("remove") else "add"
+            started = start_job(f"library:addon:{addon_id}", addons.ADDONS[addon_id]["name"], addon_worker, addon_id,
+                                action)
             return self._send(200 if started else 409, {"ok": started})
         if url.path == "/api/setup":  # the first-run choices: setup then downloads them in order, on its own
             pack = str(body.get("pack") or "") or None
@@ -2008,7 +2389,9 @@ def prompt_for(caps):
     tools = "tools" in caps
     files = [(it["name"], it["title"]) for it in myfiles.items(MY_DB) if it["status"] == "ready"]
     extra = prompt_section(MEMORY.notes(), MEMORY.ai_writes, files, datetime.date.today())
-    return (custom_prompt() or system_prompt(library(), tools)) + (f"\n\n{extra}" if extra else "")
+    lang = core.LANGUAGE_PROMPTS.get(core.language[0])
+    return (custom_prompt() or system_prompt(library(), tools)) + (f"\n\n{lang}" if lang else "") \
+        + (f"\n\n{extra}" if extra else "")
 
 
 WEBVIEW2_SETUP = os.path.join(ROOT, "MicrosoftEdgeWebview2Setup.exe")  # Microsoft's installer, in the Windows app

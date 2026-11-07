@@ -26,6 +26,43 @@ REASONING_LIMITS = {"off": 0, "short": 1000, "medium": 4000, "long": 16000, "non
 
 BASE_PROMPT = """You are an offline assistant running entirely on this computer, with no internet access: you can't go online, call or contact anyone for the person. The person asking may be dealing with a power outage or another emergency, possibly running on battery."""
 
+# The languages the app speaks: code -> its name in the Language menu (in that language) and in English. The person's
+# choice is set by app/server.py. The instructions above stay in English in every language: they are the ones the
+# models were tested with (README, "How the models did"), and small models follow English instructions best. For any
+# other language the app adds LANGUAGE_PROMPTS[code] after them (with the date, the names of the person's files and
+# the memory notes), so it applies to the person's own edited instructions too.
+# Adding a language: an entry here, in LANGUAGE_PROMPTS and in SOURCES_WORDS, and its interface pack,
+# app/static/lang-<code>.js (see app/static/i18n.js).
+LANGUAGES = {"en": {"name": "English", "english": "English"},
+             "nl": {"name": "Nederlands", "english": "Dutch"}}
+language = ["en"]
+
+
+def set_language(lang):
+    language[0] = lang if lang in LANGUAGES else "en"
+
+
+LANGUAGE_PROMPTS = {"en": "", "nl": """Language: the person speaks Dutch. Always answer in Dutch (Nederlands), whatever language the library articles are in, and write your "Sources:" line as "Bronnen:". If you answered from what you already know, write "Bronnen: geen (uit eigen kennis)".
+- The library is mostly in English, so search it with English keywords (for "voedsel bewaren zonder stroom", search "food storage power outage"). It may also hold Dutch articles (the Agorisme wiki): when one could help, search again with Dutch keywords.
+- The person is most likely in the Netherlands or Belgium: the emergency number is 112, so say 112 wherever these instructions say 911. For poisoning advice in the Netherlands, a doctor or the huisartsenpost asks the Nationaal Vergiftigingen Informatie Centrum.
+- Translate what you read accurately; keep units metric (°C, liters, kilograms)."""}
+# Each language's word for the answer's closing "Sources:" line (plural first, then singular; LANGUAGE_PROMPTS asks the
+# model for the plural), the lines the app writes in place of a made-up one, and "own": the model's line for an answer
+# from its own knowledge (the English instructions spell it out in English, so models half-translate it).
+SOURCES_WORDS = {
+    "en": {"words": ["Sources", "Source"], "head": "Sources: ", "none_opened": "Sources: none opened (it only saw the search results below)",
+           "earlier": "Sources: what it read earlier in this chat", "none": "Sources: none (from its own knowledge)",
+           "own": "Sources: none (from my own knowledge)"},
+    "nl": {"words": ["Bronnen", "Bron"], "head": "Bronnen: ", "none_opened": "Bronnen: niets geopend (alleen de zoekresultaten hieronder gezien)",
+           "earlier": "Bronnen: wat het eerder in dit gesprek las", "none": "Bronnen: geen (uit eigen kennis)",
+           "own": "Bronnen: geen (uit eigen kennis)"},
+}
+
+
+def sources_words():
+    return SOURCES_WORDS.get(language[0], SOURCES_WORDS["en"])
+
+
 LIBRARY_PROMPT = """
 
 You have an offline library: search it with search_library and read results with read_article. The ids are for your tools; don't show them to the person. It holds: {labels}.{personal} If the person asks to see a source or the full instructions, open it for them with show_article."""
@@ -242,7 +279,13 @@ def attach_excerpts(library, messages):
 
 
 TOOL_MARKUP = ("<tool_call", "<function")
-SOURCES_LINE = re.compile(r"^[*_# ]*Sources?(?:[*_ ]*:.*|[*_ ]*)$", re.IGNORECASE | re.MULTILINE)  # or a "Sources" heading
+# "Sources" in any of the app's languages (a model may switch languages, so all of them, longest first)
+SOURCE_WORD = "(?:" + "|".join(sorted({re.escape(w) for v in SOURCES_WORDS.values() for w in v["words"]},
+                                      key=len, reverse=True)) + ")"
+# "Bronnen: none (from my own knowledge)": the instructions' English "none" line under another language's word
+NONE_LINE = re.compile(r"^[*_# ]*" + SOURCE_WORD + r"[*_ ]*:[*_ ]*none\b[^\n]*$", re.IGNORECASE | re.MULTILINE)
+SOURCES_PLURAL = "(?:" + "|".join(re.escape(v["words"][0]) for v in SOURCES_WORDS.values()) + ")"
+SOURCES_LINE = re.compile(r"^[*_# ]*" + SOURCE_WORD + r"(?:[*_ ]*:.*|[*_ ]*)$", re.IGNORECASE | re.MULTILINE)  # or a heading
 LIST_ITEM = re.compile(r"\s*([-*•–+]|\d+[.)])\s")
 ID_ROW = re.compile(r"\s*\[ids?\s*\d{5,}\]", re.I)
 # A passage id the way models write one: "1403312", "[id 1403312]", "(ids 1403312 and 1403313, etc.)", "passage
@@ -254,10 +297,10 @@ ID_REMARK = re.compile(r"[ \t]*[(\[]\s*(?:passage\s+)?ids?\s*:?\s*\d{5,}(?:\s*(?
                        re.I)
 LOOKUP_PREAMBLE = re.compile(r"(?:let me|i'll|i will|i need to|i should|now i|next,? i|first,? i)\b[^\n]{0,200}?"
                              r"\b(?:search|look|check|read|open|find)\b[^\n]{0,200}$", re.I)
-INLINE_SOURCES = re.compile(r"([.!?])[ \t]+((?:\*\*)?Sources?(?:\*\*)?:[^\n]*?)\s*\Z")
+INLINE_SOURCES = re.compile(r"([.!?])[ \t]+((?:\*\*)?" + SOURCE_WORD + r"(?:\*\*)?:[^\n]*?)\s*\Z")
 # A Sources line made of tool calls ("Sources: search_library (generator carbon monoxide garage), read_article (...)"),
 # written out instead of looking anything up: Lightning opened an answer with one in the 0.3.1 Windows test.
-TOOL_SOURCES = re.compile(r"^[*_# ]*Sources?\b[^\n]*\b(?:search_library|read_article|show_article)\b[^\n]*(?:\n|\Z)",
+TOOL_SOURCES = re.compile(r"^[*_# ]*" + SOURCE_WORD + r"\b[^\n]*\b(?:search_library|read_article|show_article)\b[^\n]*(?:\n|\Z)",
                           re.IGNORECASE | re.MULTILINE)
 # Said before the last round, after the lookups run out. Without it some models (Granite) answer the last
 # round with yet another lookup written out as text, and the person gets no answer at all.
@@ -270,7 +313,9 @@ SEARCH_NUDGE = ("(Note from the app, not the person: they asked you to look this
                 "search_library before you answer.)")
 ASKED_SEARCH = re.compile(r"\b(?:look (?:it|that|this|them|those) up|look up|search (?:the library|for|it|that|this)|"
                           r"check (?:the library|your sources|a source)|look (?:in|through) the library|"
-                          r"find (?:a|the|me a|some) sources?|what does the library say|in the library)\b", re.I)
+                          r"find (?:a|the|me a|some) sources?|what does the library say|in the library|"
+                          r"zoek (?:het|dat|dit|eens)? ?op|opzoeken|zoek (?:in|door) de bibliotheek|in de bibliotheek|"
+                          r"wat zegt de bibliotheek|kijk (?:in|na in) (?:de|je) bronnen)\b", re.I)
 # Said with the best passages its searches found, when it looked things up but wrote no answer: Granite searched six
 # times for "A power line is down in my front yard" and then wrote another lookup instead of answering (issue #2).
 RESCUE_NOTE = ("(Note from the app, not the person: you can't look anything else up. Answer the question now from "
@@ -305,7 +350,10 @@ Examples:
 - "The power went out. How long is my fridge safe?" gives {"forget": [], "change": [], "remember": []}"""
 PERSONAL = re.compile(r"\b(i|i'm|im|i've|ive|i'd|my|me|mine|myself|we|we're|we've|our|ours|us|forget|remember|remind|"
                       r"daughter|son|wife|husband|partner|kids?|child|children|baby|mom|dad|mother|father|grand\w+|"
-                      r"family|household|roommates?)\b", re.I)
+                      r"family|household|roommates?|"
+                      # Dutch, for people who chose Dutch
+                      r"ik|mijn|mij|mezelf|wij|ons|onze|vergeet|onthoud|dochters?|zoons?|zonen|vrouw|echtgeno\w+|"
+                      r"kinderen|kindje|moeder|vader|mama|papa|opa|oma|gezin|familie|huisgeno\w+)\b", re.I)
 
 
 def chat_events(model, library, messages, reasoning="off", caps=None, length="normal", memory=None):
@@ -440,14 +488,15 @@ def chat_events(model, library, messages, reasoning="off", caps=None, length="no
         answer = TOOL_SOURCES.sub("", answer).strip("\n")  # the Sources line added below says what it really read
         # The model names the sources it used, and the screen shows every article it opened. Models still name sources
         # they never opened (evals/citation_check.py), so a Sources line that does is replaced by what it read.
+        words = sources_words()
         if read:
-            line = "Sources: " + "; ".join(f"{s['title']} ({s['source']})" for s in read[:6])
+            line = words["head"] + "; ".join(f"{s['title']} ({s['source']})" for s in read[:6])
         elif looked:
-            line = "Sources: none opened (it only saw the search results below)"
+            line = words["none_opened"]
         elif earlier:
-            line = "Sources: what it read earlier in this chat"
+            line = words["earlier"]
         else:
-            line = "Sources: none (from its own knowledge)"
+            line = words["none"]
         # Articles it only saw in search results count too: they exist, and it saw their excerpts.
         shown, ids = read_before + [{"id": k, **v} for k, v in seen.items()], set(sources) | set(seen)
         by_id = {**seen, **sources}
@@ -467,12 +516,14 @@ def chat_events(model, library, messages, reasoning="off", caps=None, length="no
         if (not named or unopened) and not just_memory:
             answer = _with_sources_line(answer, line)
         elif named and any(_known_ids(item, by_id) for item in named):  # named by id, meaningless to the person
-            answer = _with_sources_line(answer, "Sources: " + "; ".join(_titled(item, by_id) for item in named))
+            answer = _with_sources_line(answer, words["head"] + "; ".join(_titled(item, by_id) for item in named))
         # "(ids 1403312, 1400192, etc.)" in the text goes; "(ID 4471203)" from the person's insurance card doesn't.
         block, pool = _sources_block(answer), known | ids | {s["id"] for s in read_before if s.get("id") is not None}
         cut = block[0] if block else len(answer)
         answer = ID_REMARK.sub(lambda m: "" if _known_ids(m.group(0), pool, every=True) else m.group(0), answer[:cut]) \
             + answer[cut:]
+    if language[0] != "en" and answer:  # its "none" line in the person's language, not the instructions' English
+        answer = NONE_LINE.sub(lambda m: sources_words()["own"], answer)
     yield {"type": "done", "tokens": tokens, "seconds": seconds, "answer": answer, "cut_off": cut_off,
            "unfinished": unfinished, "unopened": unopened, "named": named if library and not unfinished else None,
            "sources": read, "seen": found[len(read):], "think": think, "discarded": discarded}
@@ -565,6 +616,9 @@ def memory_check(model, messages, memory, think, options):
     earlier = "".join(f'Earlier in this chat they said: "{m[:300]}"\n' for m in said[-4:-1])
     fill = {"notes": notes, "earlier": earlier + ("\n" if earlier else ""), "said": said[-1] if said else ""}
     prompt = re.sub(r"\{(notes|earlier|said)\}", lambda m: fill[m.group(1)], MEMORY_CHECK)  # one pass: notes may hold braces
+    if language[0] != "en":  # the checks memory.py runs on notes read English, so notes stay English in every language
+        prompt += ("\n\nThey may write in Dutch or another language: write the notes in English all the same, keeping "
+                   "names, places and medicine names as they wrote them.")
     yield {"type": "memory_check"}
     reply = []
     # The same num_ctx as the answer: a different one would make Ollama load the model again.
@@ -628,8 +682,8 @@ def _sources_block(answer):
     if not found:
         return None
     line = found[-1]
-    plural = bool(re.match(r"^[*_# ]*Sources", line.group(0), re.IGNORECASE))
-    head = re.sub(r"^[*_# ]*Sources?[*_ ]*:?", "", line.group(0), flags=re.IGNORECASE)
+    plural = bool(re.match(r"^[*_# ]*" + SOURCES_PLURAL, line.group(0), re.IGNORECASE))
+    head = re.sub(r"^[*_# ]*" + SOURCE_WORD + r"[*_ ]*:?", "", line.group(0), flags=re.IGNORECASE)
     items, end = [p.strip(" *_.") for p in _split_outside_brackets(head)], line.end()
     if plural:
         bare = not [i for i in items if i]  # "Sources:" alone: the rows right under it are its list, bulleted or not
@@ -756,9 +810,12 @@ def _read_earlier(messages):
 
 # A message that asks for information as well as "remember this", and a reply that only acknowledges a memory request.
 INFO_ASK = re.compile(r"\?|\b(how (much|many|long|often|do|does|can|should)|what|which|tell me|explain|is it safe|safe "
-                      r"to|can (i|he|she|we|they|you)|should (i|he|she|we|they)|doses?|dosage)\b", re.I)
+                      r"to|can (i|he|she|we|they|you)|should (i|he|she|we|they)|doses?|dosage|"
+                      r"hoe|hoeveel|wat|welke|waarom|wanneer|vertel|leg uit|is het veilig|mag (ik|hij|zij|ze|we)|"
+                      r"kan (ik|hij|zij|ze|we)|moet (ik|hij|zij|ze|we)|dosering)\b", re.I)
 ACKNOWLEDGED = re.compile(r"\b(i'll remember|i will remember|i've noted|noted|got it|i'll keep|i've saved|saved|"
-                          r"i've forgotten|forgotten|i'll forget|deleted|removed|no longer|won't remember)\b", re.I)
+                          r"i've forgotten|forgotten|i'll forget|deleted|removed|no longer|won't remember|"
+                          r"ik onthoud|onthouden|genoteerd|opgeslagen|begrepen|vergeten|verwijderd|niet meer)\b", re.I)
 
 
 def _with_sources_line(answer, line):

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{LANG}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -17,6 +17,7 @@
       Model: <strong id="model-name">none yet</strong> <span aria-hidden="true">▾</span>
     </button>
     <button id="library-btn" class="ghost" type="button">Search library</button>
+    <button id="library-manage" class="ghost" type="button" title="Download, update or move the library and its sources">Library</button>
     <button id="files-btn" class="ghost" type="button" title="Add your own documents for the AI to search">Your files</button>
     <button id="memory-btn" class="ghost" type="button" title="See and edit what the AI remembers about you">Memory</button>
     <button id="prompt-btn" class="ghost" type="button" title="See and edit the instructions the AI follows">Instructions</button>
@@ -74,7 +75,8 @@
         <button type="submit" id="send" aria-label="Send question">Send</button>
       </div>
       <p id="length-note" class="length-note" role="note" hidden></p>
-      <p class="footnote">AI can make mistakes. Check the sources.<span id="version-line" hidden> · <span id="version-text"></span>
+      <p class="footnote">AI can make mistakes. Check the sources. ·
+        <label class="lang-pick">Language <select id="language" aria-label="Language">{{LANG_OPTIONS}}</select></label><span id="version-line" hidden> · <span id="version-text"></span>
         · <button id="updates-btn" class="link" type="button">Check for updates</button></span></p>
     </form>
   </section>
@@ -106,7 +108,7 @@
   </div>
   <p class="meta">Survival LLM gives the AI these instructions at the start of every conversation. Change them to change
     how it answers. Your version applies to every model, from your next question; Reset brings back the original.
-    After these, the app adds today's date, the names of your files and the AI's notes about you (see Memory).</p>
+    After these, the app adds today's date, the answer language (when it isn't English), the names of your files and the AI's notes about you (see Memory).</p>
   <textarea id="prompt-text" class="prompt-text" spellcheck="false" aria-label="AI instructions"></textarea>
   <div class="prompt-actions">
     <span id="prompt-status" class="meta" aria-live="polite"></span>
@@ -177,6 +179,8 @@
 </dialog>
 <div id="drop-overlay" class="drop-overlay" hidden>Drop to add to Your files</div>
 <div id="announce" class="sr-only" aria-live="polite"></div>
+<script src="/static/i18n.js"></script>
+{{LANG_SCRIPTS}}
 <script src="/static/app.js"></script>
 </body>
 </html>
