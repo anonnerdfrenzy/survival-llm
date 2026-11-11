@@ -38,6 +38,19 @@ function Find-Python {
     return $found
 }
 
+function Get-EnvironmentStatus {
+    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
+        return [pscustomobject]@{ pythonVersion = $null; runtimeReady = $false; environmentReady = $false; issues = @('Local environment is missing or incomplete. Run Setup.cmd.') }
+    }
+    try {
+        $status = & $venvPython -I -B (Join-Path $PSScriptRoot 'check_environment.py')
+        if ($LASTEXITCODE -ne 0) { throw 'Environment probe failed.' }
+        return ($status | ConvertFrom-Json)
+    } catch {
+        return [pscustomobject]@{ pythonVersion = $null; runtimeReady = $false; environmentReady = $false; issues = @('Local Python could not be checked. Preserve and repair .venv.') }
+    }
+}
+
 function Initialize-Environment {
     $environment = Join-Path $root '.venv'
     if ((Test-Path -LiteralPath $environment) -and -not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
@@ -56,19 +69,24 @@ function Initialize-Environment {
     Write-Host 'Installing browser-mode dependencies (no models or library)...'
     & $venvPython -m pip install --disable-pip-version-check -r (Join-Path $PSScriptRoot 'requirements.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Python dependency installation failed. Check the connection and retry Setup.cmd.' }
+    $status = Get-EnvironmentStatus
+    if (-not $status.environmentReady) { throw ('Environment is not ready: ' + ($status.issues -join '; ')) }
 }
 
 try {
     if ($CheckOnly) {
         $python = if ($Action -eq 'Update') { $null } else { Find-Python }
         $ollama = Get-Command ollama.exe -ErrorAction SilentlyContinue
+        $status = Get-EnvironmentStatus
         [ordered]@{
             action = $Action
             root = $root
             branch = (Invoke-Git @('branch', '--show-current'))
             upstream = $upstream
             python = $python
-            environmentReady = (Test-Path -LiteralPath $venvPython)
+            environmentReady = $status.environmentReady
+            pythonVersion = $status.pythonVersion
+            issues = @($status.issues)
             ollamaInstalled = [bool]$ollama
             dryRun = $true
         } | ConvertTo-Json
@@ -88,10 +106,9 @@ try {
         exit 0
     }
     if (-not (Test-Path -LiteralPath $venvPython)) { Initialize-Environment }
-    & $venvPython -c "import importlib.util, sys; sys.exit(0 if all(importlib.util.find_spec(name) for name in ('pypdf', 'truststore')) else 1)"
-    if ($LASTEXITCODE -ne 0) { Initialize-Environment }
-    & $venvPython -c 'import pypdf, truststore'
-    if ($LASTEXITCODE -ne 0) { throw 'Dependencies could not be loaded. Run Setup.cmd to repair the environment.' }
+    $status = Get-EnvironmentStatus
+    if (-not $status.runtimeReady) { throw ('Environment is not ready: ' + ($status.issues -join '; ')) }
+    if (-not $status.environmentReady) { Initialize-Environment }
     # Upstream's existing checkout mode disables the packaged-app self-updater.
     # Source updates remain an explicit Update.cmd action; no upstream code is patched.
     $env:SURVIVAL_LLM_DEV = 'source checkout'

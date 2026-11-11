@@ -3,6 +3,8 @@
 These helpers run the source checkout in browser mode and update it from the
 author's repository. They also work when `origin` points to your own fork.
 
+See [verification results and limits](VERIFICATION.md) for commands actually tested.
+
 - `Setup.cmd`: creates `.venv` and installs two browser-mode Python dependencies.
   Requires Python 3.12+. Pass `-PythonPath C:\path\to\python.exe` if needed.
 - `Start.cmd`: prepares a missing `.venv` and browser-mode dependencies on first
@@ -20,10 +22,16 @@ author's repository. They also work when `origin` points to your own fork.
 
 Add `-CheckOnly` to any command for a read-only preflight. No setup, server,
 model/library download or Git fetch is performed in this mode.
+Exit code 0 means the diagnostic report was produced, not that everything is
+ready. Read `environmentReady` and `issues`: they check Python 3.12+, a real
+virtual environment and dependency imports. `ollamaInstalled` only reports the
+executable; it does not confirm a running engine, an installed model or a library.
 
-Launcher regression checks: `python local-tools/test_windows_start.py`. They
-exercise first and repeated starts, read-only preflight and preservation of an
-incomplete environment in temporary folders, without downloading dependencies.
+Launcher regression checks after setup:
+`.venv\Scripts\python.exe local-tools/test_windows_start.py`. They exercise the
+actual CMD entry points from outside a project folder with spaces: first and
+repeated starts, setup, dependency repair, preflight and failure exit codes.
+Local fixture packages keep the tests offline.
 
 The app uses [Ollama](https://ollama.com/) installed on the computer. Open Ollama
 before use if needed; the original app can also detect/start an installed engine.
@@ -75,7 +83,8 @@ an in-progress merge, use `git merge --abort`. Do not reset your feature branch
 to upstream: that would remove its local commits from the branch.
 
 The updater can be tested without internet, Ollama, model downloads or new
-commits: `python local-tools/test_source_update.py` (Windows with Git/PowerShell).
+commits: `.venv\Scripts\python.exe local-tools/test_source_update.py`
+(Windows with Git/PowerShell, after setup).
 
 ## Formatting and development checks
 
@@ -98,10 +107,10 @@ When opening this repository as a VS Code folder, install the recommended
 Prettier extension to format HTML, CSS, JavaScript and JSON on save. The local
 dependency and lockfile keep command-line and editor formatting consistent.
 
-Run `python tests/run_all.py` for the application tests, including HTTP checks
+Run `.venv\Scripts\python.exe tests/run_all.py` for the application tests, including HTTP checks
 of the relocated static assets and a test of the packaging copy function. Bash
 is needed for the packaging check (Git Bash on Windows); it does not download
-build dependencies or package a release. Run `python local-tools/test_source_update.py`
+build dependencies or package a release. Run `.venv\Scripts\python.exe local-tools/test_source_update.py`
 separately on Windows for the source updater.
 
 The Windows folder icon uses `docs/src/assets/folder.ico`, referenced by the
