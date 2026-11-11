@@ -1189,8 +1189,10 @@ $("model-btn").onclick = openModels;
 $("close-models").onclick = () => els.dialog.close();
 
 // ---------- the person's own files ----------
-const FILE_TYPES = [".pdf", ".docx", ".odt", ".epub", ".html", ".htm", ".txt", ".md", ".markdown", ".csv"];
-const CANT_READ = "Survival LLM can't read this kind of file. It reads PDF, Word, EPUB, web pages and text files.";
+const FILE_TYPES = [".pdf", ".docx", ".odt", ".epub", ".html", ".htm", ".txt", ".md", ".markdown", ".csv",
+                    ".py", ".js", ".mjs", ".ts", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".service",
+                    ".sh", ".ps1", ".bat", ".ino", ".c", ".h", ".cpp", ".sql", ".env"];  // keep in step with myfiles.KINDS
+const CANT_READ = "Survival LLM can't read this kind of file. It reads PDF, Word, EPUB, web pages, text files, source code and configuration files.";
 const filesDialog = $("files-dialog");
 let myFiles = null;        // last /api/myfiles
 let filesTimer = null, filesSig = "", filesChecks = 0, adding = 0;
