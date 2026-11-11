@@ -1638,7 +1638,15 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/" or url.path.startswith("/static/"):
             if not self._allowed(need_token=False):
                 return self._send(403, {"error": "forbidden"})
-            name = "index.html" if url.path == "/" else os.path.basename(url.path)
+            assets = {
+                "/": "index.html",
+                "/static/index.html": "index.html",
+                "/static/src/js/app.js": "src/js/app.js",
+                "/static/src/css/app.css": "src/css/app.css",
+            }
+            name = assets.get(url.path)
+            if name is None:
+                return self._send(404, {"error": "not found"})
             path = os.path.join(STATIC, name)
             if not os.path.isfile(path):
                 return self._send(404, {"error": "not found"})

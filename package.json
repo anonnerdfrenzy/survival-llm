@@ -1,0 +1,12 @@
+{
+  "name": "survival-llm-dev-tools",
+  "private": true,
+  "description": "Optional formatting tools for the browser UI and project website",
+  "scripts": {
+    "format": "prettier --write \"app/static/**/*.{html,css,js}\" \"docs/index.html\" \"docs/src/**/*.{css,js}\" docs/.prettierrc package.json package-lock.json prettier.config.cjs \".vscode/*.json\" local-tools/README.md",
+    "format:check": "prettier --check \"app/static/**/*.{html,css,js}\" \"docs/index.html\" \"docs/src/**/*.{css,js}\" docs/.prettierrc package.json package-lock.json prettier.config.cjs \".vscode/*.json\" local-tools/README.md"
+  },
+  "devDependencies": {
+    "prettier": "3.10.0"
+  }
+}

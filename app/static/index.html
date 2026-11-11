@@ -1,182 +1,204 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="token" content="{{TOKEN}}">
-<meta name="profile" content="{{PROFILE}}">
-<title>Survival LLM</title>
-<link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-<header class="top">
-  <div class="brand"><span class="logo" aria-hidden="true"></span>Survival LLM<span id="dev-badge" class="dev-badge" hidden>Dev</span></div>
-  <div class="status" id="status">Starting…</div>
-  <div class="controls">
-    <button id="model-btn" class="ghost model-btn" type="button" title="Choose which AI model answers">
-      Model: <strong id="model-name">none yet</strong> <span aria-hidden="true">▾</span>
-    </button>
-    <button id="library-btn" class="ghost" type="button">Search library</button>
-    <button id="files-btn" class="ghost" type="button" title="Add your own documents for the AI to search">Your files</button>
-    <button id="memory-btn" class="ghost" type="button" title="See and edit what the AI remembers about you">Memory</button>
-    <button id="prompt-btn" class="ghost" type="button" title="See and edit the instructions the AI follows">Instructions</button>
-    <button id="new-chat" class="ghost" type="button">New chat</button>
-    <button id="quit" class="ghost" type="button" title="Stop Survival LLM">Quit</button>
-  </div>
-</header>
-
-<main id="layout" class="layout">
-  <section class="chat" aria-label="Chat">
-    <div id="update-banner" class="update-banner" hidden role="status">
-      <span class="update-text"></span>
-      <button id="banner-update" class="primary" type="button">See what's new</button>
-      <button id="banner-dismiss" class="ghost icon" type="button" aria-label="Not now">✕</button>
-    </div>
-    <div id="messages" class="messages">
-      <div id="setup" class="setup" hidden></div>
-      <div id="welcome" class="welcome">
-        <p id="ready-note" class="ready-note" hidden>✓ Setup is done. Survival LLM now works without internet.</p>
-        <p id="library-missing" class="library-missing" hidden></p>
-        <h1>Ask anything. No internet needed.</h1>
-        <p>A local AI looks things up in an offline library of medical, emergency, how-to and encyclopedia
-          articles, then tells you where each answer came from. Click a source to read it yourself. Add your own
-          documents with <strong>Your files</strong> at the top, and it searches those too. It remembers what you tell it
-          about yourself between chats; see and edit that in <strong>Memory</strong>.</p>
-        <p class="using" id="using" hidden></p>
-        <div class="examples">
-          <button type="button" class="example">The power is out. How long is the food in my fridge safe?</button>
-          <button type="button" class="example">Where can I safely run a generator?</button>
-          <button type="button" class="example">How do I make tap water safe to drink?</button>
-          <button type="button" class="example">Someone burned their hand on the stove. What do I do?</button>
-        </div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="token" content="{{TOKEN}}" />
+    <meta name="profile" content="{{PROFILE}}" />
+    <title>Survival LLM</title>
+    <link rel="stylesheet" href="/static/src/css/app.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand"><span class="logo" aria-hidden="true"></span>Survival LLM<span id="dev-badge" class="dev-badge" hidden>Dev</span></div>
+      <div class="status" id="status">Starting…</div>
+      <div class="controls">
+        <button id="model-btn" class="ghost model-btn" type="button" title="Choose which AI model answers">
+          Model: <strong id="model-name">none yet</strong> <span aria-hidden="true">▾</span>
+        </button>
+        <button id="library-btn" class="ghost" type="button">Search library</button>
+        <button id="files-btn" class="ghost" type="button" title="Add your own documents for the AI to search">Your files</button>
+        <button id="memory-btn" class="ghost" type="button" title="See and edit what the AI remembers about you">Memory</button>
+        <button id="prompt-btn" class="ghost" type="button" title="See and edit the instructions the AI follows">Instructions</button>
+        <button id="new-chat" class="ghost" type="button">New chat</button>
+        <button id="quit" class="ghost" type="button" title="Stop Survival LLM">Quit</button>
       </div>
-    </div>
-    <form id="composer" class="composer">
-      <p id="composer-note" class="composer-note" hidden></p>
-      <textarea id="input" rows="1" placeholder="Ask a question…" aria-label="Your question"></textarea>
-      <div class="composer-row">
-        <div class="options">
-          <label class="think" title="How much the AI may think before it answers. At the limit its thinking is cut off and it answers from what it has. More thinking is slower, and often more careful. A token is about three quarters of a word. Qwen thinks a little even when this is Off.">Reasoning
-            <select id="reasoning">
-              <option value="off">Off</option>
-              <option value="short">Short (1,000 tokens)</option>
-              <option value="medium">Medium (4,000 tokens)</option>
-              <option value="long">Long (16,000 tokens)</option>
-              <option value="none">No limit</option>
-            </select></label>
-          <label class="think" title="Normal stops an answer after about 6,000 words, Long after about 25,000. None never stops it on its own; use Stop if it gets stuck.">Length limit
-            <select id="length">
-              <option value="normal">Normal</option>
-              <option value="long">Long</option>
-              <option value="none">None</option>
-            </select></label>
+    </header>
+
+    <main id="layout" class="layout">
+      <section class="chat" aria-label="Chat">
+        <div id="update-banner" class="update-banner" hidden role="status">
+          <span class="update-text"></span>
+          <button id="banner-update" class="primary" type="button">See what's new</button>
+          <button id="banner-dismiss" class="ghost icon" type="button" aria-label="Not now">✕</button>
         </div>
-        <button type="submit" id="send" aria-label="Send question">Send</button>
+        <div id="messages" class="messages">
+          <div id="setup" class="setup" hidden></div>
+          <div id="welcome" class="welcome">
+            <p id="ready-note" class="ready-note" hidden>✓ Setup is done. Survival LLM now works without internet.</p>
+            <p id="library-missing" class="library-missing" hidden></p>
+            <h1>Ask anything. No internet needed.</h1>
+            <p>
+              A local AI looks things up in an offline library of medical, emergency, how-to and encyclopedia articles, then tells you where each answer came
+              from. Click a source to read it yourself. Add your own documents with <strong>Your files</strong> at the top, and it searches those too. It
+              remembers what you tell it about yourself between chats; see and edit that in <strong>Memory</strong>.
+            </p>
+            <p class="using" id="using" hidden></p>
+            <div class="examples">
+              <button type="button" class="example">The power is out. How long is the food in my fridge safe?</button>
+              <button type="button" class="example">Where can I safely run a generator?</button>
+              <button type="button" class="example">How do I make tap water safe to drink?</button>
+              <button type="button" class="example">Someone burned their hand on the stove. What do I do?</button>
+            </div>
+          </div>
+        </div>
+        <form id="composer" class="composer">
+          <p id="composer-note" class="composer-note" hidden></p>
+          <textarea id="input" rows="1" placeholder="Ask a question…" aria-label="Your question"></textarea>
+          <div class="composer-row">
+            <div class="options">
+              <label
+                class="think"
+                title="How much the AI may think before it answers. At the limit its thinking is cut off and it answers from what it has. More thinking is slower, and often more careful. A token is about three quarters of a word. Qwen thinks a little even when this is Off."
+                >Reasoning
+                <select id="reasoning">
+                  <option value="off">Off</option>
+                  <option value="short">Short (1,000 tokens)</option>
+                  <option value="medium">Medium (4,000 tokens)</option>
+                  <option value="long">Long (16,000 tokens)</option>
+                  <option value="none">No limit</option>
+                </select></label
+              >
+              <label
+                class="think"
+                title="Normal stops an answer after about 6,000 words, Long after about 25,000. None never stops it on its own; use Stop if it gets stuck."
+                >Length limit
+                <select id="length">
+                  <option value="normal">Normal</option>
+                  <option value="long">Long</option>
+                  <option value="none">None</option>
+                </select></label
+              >
+            </div>
+            <button type="submit" id="send" aria-label="Send question">Send</button>
+          </div>
+          <p id="length-note" class="length-note" role="note" hidden></p>
+          <p class="footnote">
+            AI can make mistakes. Check the sources.<span id="version-line" hidden>
+              · <span id="version-text"></span> · <button id="updates-btn" class="link" type="button">Check for updates</button></span
+            >
+          </p>
+        </form>
+      </section>
+
+      <aside id="reader" class="reader" hidden aria-label="Library and sources">
+        <div class="reader-head">
+          <form id="search-form" class="search-form" role="search">
+            <input id="search" type="search" placeholder="Search the library yourself…" aria-label="Search the library" />
+          </form>
+          <button id="close-reader" class="ghost icon" type="button" aria-label="Close">✕</button>
+        </div>
+        <p id="reader-lib" class="reader-lib meta" hidden></p>
+        <div id="reader-body" class="reader-body"></div>
+      </aside>
+    </main>
+
+    <dialog id="models" class="dialog" aria-labelledby="models-title">
+      <div class="dialog-head">
+        <h2 id="models-title">AI models</h2>
+        <button id="close-models" class="ghost icon" type="button" aria-label="Close">✕</button>
       </div>
-      <p id="length-note" class="length-note" role="note" hidden></p>
-      <p class="footnote">AI can make mistakes. Check the sources.<span id="version-line" hidden> · <span id="version-text"></span>
-        · <button id="updates-btn" class="link" type="button">Check for updates</button></span></p>
-    </form>
-  </section>
-
-  <aside id="reader" class="reader" hidden aria-label="Library and sources">
-    <div class="reader-head">
-      <form id="search-form" class="search-form" role="search">
-        <input id="search" type="search" placeholder="Search the library yourself…" aria-label="Search the library">
-      </form>
-      <button id="close-reader" class="ghost icon" type="button" aria-label="Close">✕</button>
-    </div>
-    <p id="reader-lib" class="reader-lib meta" hidden></p>
-    <div id="reader-body" class="reader-body"></div>
-  </aside>
-</main>
-
-<dialog id="models" class="dialog" aria-labelledby="models-title">
-  <div class="dialog-head">
-    <h2 id="models-title">AI models</h2>
-    <button id="close-models" class="ghost icon" type="button" aria-label="Close">✕</button>
-  </div>
-  <p class="meta" id="models-intro"></p>
-  <div id="models-list"></div>
-</dialog>
-<dialog id="prompt-dialog" class="dialog wide" aria-labelledby="prompt-title">
-  <div class="dialog-head">
-    <h2 id="prompt-title">AI instructions</h2>
-    <button id="close-prompt" class="ghost icon" type="button" aria-label="Close">✕</button>
-  </div>
-  <p class="meta">Survival LLM gives the AI these instructions at the start of every conversation. Change them to change
-    how it answers. Your version applies to every model, from your next question; Reset brings back the original.
-    After these, the app adds today's date, the names of your files and the AI's notes about you (see Memory).</p>
-  <textarea id="prompt-text" class="prompt-text" spellcheck="false" aria-label="AI instructions"></textarea>
-  <div class="prompt-actions">
-    <span id="prompt-status" class="meta" aria-live="polite"></span>
-    <button id="prompt-reset" class="ghost" type="button">Reset to default</button>
-    <button id="prompt-save" class="primary" type="button">Save</button>
-  </div>
-</dialog>
-<dialog id="files-dialog" class="dialog wide" aria-labelledby="files-title">
-  <div class="dialog-head">
-    <h2 id="files-title">Your files</h2>
-    <button id="close-files" class="ghost icon" type="button" aria-label="Close">✕</button>
-  </div>
-  <p class="meta">Add your own documents and the AI searches them along with the library: manuals for your generator or
-    medical devices, prescriptions, your family's emergency plan, notes. PDF, Word, EPUB, web pages and text files.
-    They stay on this computer.</p>
-  <div id="dropzone" class="dropzone">
-    <p>Drop files here, or</p>
-    <button id="choose-files" class="primary" type="button">Choose files</button>
-    <input id="file-input" type="file" multiple hidden accept=".pdf,.docx,.odt,.epub,.html,.htm,.txt,.md,.markdown,.csv">
-  </div>
-  <p id="files-status" class="meta" aria-live="polite"></p>
-  <div id="files-notes" aria-live="polite"></div>
-  <div id="files-ask" class="files-ask" hidden>
-    <p id="files-ask-text"></p>
-    <button id="ask-replace" class="primary" type="button">Replace it</button>
-    <button id="ask-keep" class="ghost" type="button">Keep both</button>
-    <button id="ask-skip" class="ghost" type="button">Don't add it</button>
-  </div>
-  <ul id="files-list" class="files-list"></ul>
-  <div class="files-foot">
-    <span id="files-folder" class="meta"></span>
-    <button id="open-folder" class="ghost" type="button">Open the folder</button>
-    <button id="files-move" class="ghost" type="button">Use another folder…</button>
-  </div>
-  <p id="files-move-status" class="meta" aria-live="polite"></p>
-</dialog>
-<dialog id="memory-dialog" class="dialog wide" aria-labelledby="memory-title">
-  <div class="dialog-head">
-    <h2 id="memory-title">Memory</h2>
-    <button id="close-memory" class="ghost icon" type="button" aria-label="Close">✕</button>
-  </div>
-  <p class="meta">What the AI remembers about you between chats: who's in your household, health and medicines, your
-    equipment, what your files are. It reads these at the start of every chat. Edit them here, one note per line.
-    They stay on this computer.</p>
-  <label class="switch"><input type="checkbox" id="memory-writes"> Let the AI add and change notes</label>
-  <textarea id="memory-text" class="prompt-text memory-text" spellcheck="true" aria-label="Memory notes, one per line"
-    aria-describedby="memory-count" placeholder="Nothing yet. Notes appear here as the AI learns about you, or write your own, one per line. For example: My son Leo (9) has type 1 diabetes."></textarea>
-  <div class="prompt-actions">
-    <span id="memory-status" class="meta" aria-live="polite"></span>
-    <span id="memory-count" class="meta"></span>
-    <button id="memory-clear" class="ghost" type="button">Delete all</button>
-    <button id="memory-save" class="primary" type="button">Save</button>
-  </div>
-</dialog>
-<dialog id="library-dialog" class="dialog wide" aria-labelledby="library-title">
-  <div class="dialog-head">
-    <h2 id="library-title">Library</h2>
-    <button id="close-library" class="ghost icon" type="button" aria-label="Close">✕</button>
-  </div>
-  <div id="library-body" aria-live="polite"></div>
-</dialog>
-<dialog id="updates-dialog" class="dialog" aria-labelledby="updates-title">
-  <div class="dialog-head">
-    <h2 id="updates-title">Updates</h2>
-    <button id="close-updates" class="ghost icon" type="button" aria-label="Close">✕</button>
-  </div>
-  <div id="updates-body" aria-live="polite"></div>
-</dialog>
-<div id="drop-overlay" class="drop-overlay" hidden>Drop to add to Your files</div>
-<div id="announce" class="sr-only" aria-live="polite"></div>
-<script src="/static/app.js"></script>
-</body>
+      <p class="meta" id="models-intro"></p>
+      <div id="models-list"></div>
+    </dialog>
+    <dialog id="prompt-dialog" class="dialog wide" aria-labelledby="prompt-title">
+      <div class="dialog-head">
+        <h2 id="prompt-title">AI instructions</h2>
+        <button id="close-prompt" class="ghost icon" type="button" aria-label="Close">✕</button>
+      </div>
+      <p class="meta">
+        Survival LLM gives the AI these instructions at the start of every conversation. Change them to change how it answers. Your version applies to every
+        model, from your next question; Reset brings back the original. After these, the app adds today's date, the names of your files and the AI's notes about
+        you (see Memory).
+      </p>
+      <textarea id="prompt-text" class="prompt-text" spellcheck="false" aria-label="AI instructions"></textarea>
+      <div class="prompt-actions">
+        <span id="prompt-status" class="meta" aria-live="polite"></span>
+        <button id="prompt-reset" class="ghost" type="button">Reset to default</button>
+        <button id="prompt-save" class="primary" type="button">Save</button>
+      </div>
+    </dialog>
+    <dialog id="files-dialog" class="dialog wide" aria-labelledby="files-title">
+      <div class="dialog-head">
+        <h2 id="files-title">Your files</h2>
+        <button id="close-files" class="ghost icon" type="button" aria-label="Close">✕</button>
+      </div>
+      <p class="meta">
+        Add your own documents and the AI searches them along with the library: manuals for your generator or medical devices, prescriptions, your family's
+        emergency plan, notes. PDF, Word, EPUB, web pages and text files. They stay on this computer.
+      </p>
+      <div id="dropzone" class="dropzone">
+        <p>Drop files here, or</p>
+        <button id="choose-files" class="primary" type="button">Choose files</button>
+        <input id="file-input" type="file" multiple hidden accept=".pdf,.docx,.odt,.epub,.html,.htm,.txt,.md,.markdown,.csv" />
+      </div>
+      <p id="files-status" class="meta" aria-live="polite"></p>
+      <div id="files-notes" aria-live="polite"></div>
+      <div id="files-ask" class="files-ask" hidden>
+        <p id="files-ask-text"></p>
+        <button id="ask-replace" class="primary" type="button">Replace it</button>
+        <button id="ask-keep" class="ghost" type="button">Keep both</button>
+        <button id="ask-skip" class="ghost" type="button">Don't add it</button>
+      </div>
+      <ul id="files-list" class="files-list"></ul>
+      <div class="files-foot">
+        <span id="files-folder" class="meta"></span>
+        <button id="open-folder" class="ghost" type="button">Open the folder</button>
+        <button id="files-move" class="ghost" type="button">Use another folder…</button>
+      </div>
+      <p id="files-move-status" class="meta" aria-live="polite"></p>
+    </dialog>
+    <dialog id="memory-dialog" class="dialog wide" aria-labelledby="memory-title">
+      <div class="dialog-head">
+        <h2 id="memory-title">Memory</h2>
+        <button id="close-memory" class="ghost icon" type="button" aria-label="Close">✕</button>
+      </div>
+      <p class="meta">
+        What the AI remembers about you between chats: who's in your household, health and medicines, your equipment, what your files are. It reads these at the
+        start of every chat. Edit them here, one note per line. They stay on this computer.
+      </p>
+      <label class="switch"><input type="checkbox" id="memory-writes" /> Let the AI add and change notes</label>
+      <textarea
+        id="memory-text"
+        class="prompt-text memory-text"
+        spellcheck="true"
+        aria-label="Memory notes, one per line"
+        aria-describedby="memory-count"
+        placeholder="Nothing yet. Notes appear here as the AI learns about you, or write your own, one per line. For example: My son Leo (9) has type 1 diabetes."
+      ></textarea>
+      <div class="prompt-actions">
+        <span id="memory-status" class="meta" aria-live="polite"></span>
+        <span id="memory-count" class="meta"></span>
+        <button id="memory-clear" class="ghost" type="button">Delete all</button>
+        <button id="memory-save" class="primary" type="button">Save</button>
+      </div>
+    </dialog>
+    <dialog id="library-dialog" class="dialog wide" aria-labelledby="library-title">
+      <div class="dialog-head">
+        <h2 id="library-title">Library</h2>
+        <button id="close-library" class="ghost icon" type="button" aria-label="Close">✕</button>
+      </div>
+      <div id="library-body" aria-live="polite"></div>
+    </dialog>
+    <dialog id="updates-dialog" class="dialog" aria-labelledby="updates-title">
+      <div class="dialog-head">
+        <h2 id="updates-title">Updates</h2>
+        <button id="close-updates" class="ghost icon" type="button" aria-label="Close">✕</button>
+      </div>
+      <div id="updates-body" aria-live="polite"></div>
+    </dialog>
+    <div id="drop-overlay" class="drop-overlay" hidden>Drop to add to Your files</div>
+    <div id="announce" class="sr-only" aria-live="polite"></div>
+    <script src="/static/src/js/app.js"></script>
+  </body>
 </html>

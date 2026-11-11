@@ -37,7 +37,7 @@ copy_app() {  # $1 = destination folder for the app code
   cp "$REPO/core.py" "$REPO/memory.py" "$1/"
   cp "$REPO/library/search.py" "$REPO/library/passages.py" "$REPO/library/myfiles.py" "$1/library/"
   cp "$REPO/app/server.py" "$1/app/"
-  cp "$REPO/app/static/"* "$1/app/static/"
+  cp -R "$REPO/app/static/." "$1/app/static/"
   cp "$REPO/LICENSE" "$REPO/README.md" "$REPO/SOURCES.md" "$1/"
   echo "$VERSION" > "$1/version.txt"  # the app compares it with the published update.json
 }
