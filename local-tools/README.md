@@ -5,7 +5,11 @@ author's repository. They also work when `origin` points to your own fork.
 
 - `Setup.cmd`: creates `.venv` and installs two browser-mode Python dependencies.
   Requires Python 3.12+. Pass `-PythonPath C:\path\to\python.exe` if needed.
-- `Start.cmd`: opens the original app in your browser. Stop with Ctrl+C in its terminal.
+- `Start.cmd`: prepares a missing `.venv` and browser-mode dependencies on first
+  start, then opens the original app in your browser. Python 3.12+ is required;
+  the first preparation needs internet. Subsequent starts reuse the environment.
+  An incomplete environment is preserved and reported, never deleted automatically.
+  Stop with Ctrl+C in its terminal.
 - `Update.cmd`: fetches the author's `main` directly from
   `https://github.com/anonnerdfrenzy/survival-llm.git`, independently of `origin`.
   It works on a local feature branch or `main` and applies only fast-forward
@@ -16,6 +20,10 @@ author's repository. They also work when `origin` points to your own fork.
 
 Add `-CheckOnly` to any command for a read-only preflight. No setup, server,
 model/library download or Git fetch is performed in this mode.
+
+Launcher regression checks: `python local-tools/test_windows_start.py`. They
+exercise first and repeated starts, read-only preflight and preservation of an
+incomplete environment in temporary folders, without downloading dependencies.
 
 The app uses [Ollama](https://ollama.com/) installed on the computer. Open Ollama
 before use if needed; the original app can also detect/start an installed engine.

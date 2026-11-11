@@ -38,6 +38,26 @@ function Find-Python {
     return $found
 }
 
+function Initialize-Environment {
+    $environment = Join-Path $root '.venv'
+    if ((Test-Path -LiteralPath $environment) -and -not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
+        throw 'Existing .venv is incomplete or belongs to another OS. Preserve it under another name, then retry Start.cmd. Nothing was deleted.'
+    }
+    $python = Find-Python
+    & $python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)'
+    if ($LASTEXITCODE -ne 0) { throw 'Python 3.12 or newer is required.' }
+    if (-not (Test-Path -LiteralPath $venvPython)) {
+        Write-Host 'First start: creating the local Python environment...'
+        & $python -m venv $environment
+        if ($LASTEXITCODE -ne 0) { throw 'Could not create the local Python environment.' }
+    }
+    & $venvPython -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix and sys.version_info >= (3, 12) else 1)'
+    if ($LASTEXITCODE -ne 0) { throw 'Existing .venv is not a working Python 3.12+ virtual environment. Preserve it and repair it before retrying.' }
+    Write-Host 'Installing browser-mode dependencies (no models or library)...'
+    & $venvPython -m pip install --disable-pip-version-check -r (Join-Path $PSScriptRoot 'requirements.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'Python dependency installation failed. Check the connection and retry Setup.cmd.' }
+}
+
 try {
     if ($CheckOnly) {
         $python = if ($Action -eq 'Update') { $null } else { Find-Python }
@@ -63,21 +83,15 @@ try {
         exit 0
     }
     if ($Action -eq 'Setup') {
-        $python = Find-Python
-        & $python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)'
-        if ($LASTEXITCODE -ne 0) { throw 'Python 3.12 or newer is required.' }
-        if (-not (Test-Path -LiteralPath $venvPython)) {
-            & $python -m venv (Join-Path $root '.venv')
-            if ($LASTEXITCODE -ne 0) { throw 'Could not create the local Python environment.' }
-        }
-        & $venvPython -m pip install --disable-pip-version-check -r (Join-Path $PSScriptRoot 'requirements.txt')
-        if ($LASTEXITCODE -ne 0) { throw 'Python dependency installation failed.' }
+        Initialize-Environment
         Write-Host 'Ready. Install/open Ollama if needed, then run Start.cmd. No model or library was downloaded by Setup.'
         exit 0
     }
-    if (-not (Test-Path -LiteralPath $venvPython)) { throw 'Run Setup.cmd once before starting.' }
+    if (-not (Test-Path -LiteralPath $venvPython)) { Initialize-Environment }
+    & $venvPython -c "import importlib.util, sys; sys.exit(0 if all(importlib.util.find_spec(name) for name in ('pypdf', 'truststore')) else 1)"
+    if ($LASTEXITCODE -ne 0) { Initialize-Environment }
     & $venvPython -c 'import pypdf, truststore'
-    if ($LASTEXITCODE -ne 0) { throw 'Dependencies are missing. Run Setup.cmd again.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Dependencies could not be loaded. Run Setup.cmd to repair the environment.' }
     # Upstream's existing checkout mode disables the packaged-app self-updater.
     # Source updates remain an explicit Update.cmd action; no upstream code is patched.
     $env:SURVIVAL_LLM_DEV = 'source checkout'
@@ -87,6 +101,6 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Survival LLM exited with an error.' }
     } finally { Pop-Location }
 } catch {
-    Write-Error $_.Exception.Message
+    [Console]::Error.WriteLine('ERROR: ' + $_.Exception.Message)
     exit 1
 }
