@@ -23,7 +23,15 @@ LABEL = "Your files"
 ID_OFFSET = 1_000_000_000  # their passages get ids above the library's, so one id names one passage
 KINDS = {".pdf": "PDF", ".docx": "Word", ".odt": "OpenDocument", ".epub": "EPUB", ".html": "web page",
          ".htm": "web page", ".txt": "text", ".md": "text", ".markdown": "text", ".csv": "text"}
-CANT_READ = "Survival LLM can't read this kind of file. It reads PDF, Word, EPUB, web pages and text files."
+# Source code and configuration files: read as plain text, titled by their file name (config.py, not "import os").
+CODE = {".py": "Python", ".js": "JavaScript", ".mjs": "JavaScript", ".ts": "TypeScript", ".json": "JSON",
+        ".yaml": "YAML", ".yml": "YAML", ".toml": "TOML", ".ini": "config", ".cfg": "config", ".conf": "config",
+        ".service": "systemd unit", ".sh": "shell script", ".ps1": "PowerShell script", ".bat": "batch file",
+        ".ino": "Arduino sketch", ".c": "C", ".h": "C header", ".cpp": "C++", ".sql": "SQL", ".env": "config"}
+KINDS.update(CODE)
+SKIP_DIRS = {"__pycache__", "node_modules"}  # build output and dependencies: never the person's own documents
+CANT_READ = ("Survival LLM can't read this kind of file. It reads PDF, Word, EPUB, web pages, text files, "
+             "source code and configuration files.")
 MAX_TEXT = 50_000_000  # characters kept from one file (a 1,000-page book is about 3 million)
 IGNORED = re.compile(r"^(\.|~\$)|^(desktop\.ini|thumbs\.db|icon\r)$|\.(part|crdownload|download|tmp)$", re.I)
 
@@ -184,7 +192,7 @@ def sync(folder, db_path):
 def _on_disk(folder):
     found = {}
     for root, dirs, files in os.walk(folder):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS]
         for name in files:
             if IGNORED.search(name):
                 continue
@@ -306,6 +314,8 @@ def extract(path):
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if not text:
         raise Unreadable("There's no text in this file.")
+    if ext in CODE:
+        title = os.path.basename(path)
     if not (title or "").strip():  # no title of its own: a short first line that isn't a sentence, or the file name
         first = text.split("\n\n", 1)[0].lstrip("#").strip()
         title = first if len(first) <= 80 and "\n" not in first and not first.endswith(".") else ""
