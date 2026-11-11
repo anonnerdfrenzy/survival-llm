@@ -1,0 +1,3 @@
+# Same browser-mode dependencies pinned by upstream packaging/build.sh (0.4.1).
+pypdf==6.19.0
+truststore==0.10.4

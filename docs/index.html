@@ -1,275 +1,296 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Survival LLM</title>
-<meta name="description" content="A free, open-source AI assistant and survival library that runs on your own computer and works with no internet.">
-<meta property="og:type" content="website">
-<meta property="og:site_name" content="brangus.io">
-<meta property="og:title" content="Survival LLM: an AI that still works when the internet doesn't">
-<meta property="og:description" content="A free AI assistant and survival library (1.5 million offline articles) that runs on your own computer, with no internet. Shows the source of every answer. Mac and Windows.">
-<meta property="og:url" content="https://www.brangus.io/survival-llm">
-<meta property="og:image" content="https://www.brangus.io/survival-llm/social-card.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="628">
-<meta property="og:image:alt" content="Survival LLM answering &quot;I'm bleeding a lot from my foot. Help. What do I do?&quot; with first-aid steps and the manuals it used">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Survival LLM: an AI that still works when the internet doesn't">
-<meta name="twitter:description" content="A free AI assistant and survival library that runs on your own computer, with no internet. Shows the source of every answer.">
-<meta name="twitter:image" content="https://www.brangus.io/survival-llm/social-card.png">
-<link rel="canonical" href="https://www.brangus.io/survival-llm">
-<style>
-  :root {
-    --bg: #f7f6f3; --panel: #ffffff; --text: #1d1c1a; --muted: #6b6963; --line: #e3e1db;
-    --accent: #b36b00; --accent-text: #ffffff; --soft: #fff4d6;
-    color-scheme: light;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #151412; --panel: #1e1d1a; --text: #ecebe6; --muted: #a3a097; --line: #2f2d29;
-      --accent: #f0b54a; --accent-text: #1d1405; --soft: #2c2619; color-scheme: dark;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: #151412; --panel: #1e1d1a; --text: #ecebe6; --muted: #a3a097; --line: #2f2d29;
-    --accent: #f0b54a; --accent-text: #1d1405; --soft: #2c2619; color-scheme: dark;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-    font: 17px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 980px; margin: 0 auto; padding: 0 16px 64px; }
-  a { color: var(--accent); }
-  .hero { padding: 72px 0 40px; }
-  .hero h1 { font-size: clamp(34px, 6vw, 54px); line-height: 1.05; margin: 0 0 16px; letter-spacing: -0.02em; }
-  .hero p.lede { font-size: 20px; color: var(--muted); max-width: 640px; margin: 0 0 28px; }
-  .buttons { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-  .btn { display: inline-block; padding: 13px 22px; border-radius: 12px; font-weight: 650; text-decoration: none;
-    background: var(--accent); color: var(--accent-text); }
-  .btn.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
-  .btn .size { font-weight: 400; opacity: .75; margin-left: 4px; font-size: .9em; }
-  .small { font-size: 14px; color: var(--muted); }
-  h2 { font-size: 26px; margin: 56px 0 14px; letter-spacing: -0.01em; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
-  .card h3 { margin: 0 0 6px; font-size: 18px; }
-  .card p { margin: 0; color: var(--muted); font-size: 16px; }
-  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line);
-    border-radius: 14px; overflow: hidden; font-size: 16px; }
-  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { font-size: 14px; color: var(--muted); font-weight: 600; }
-  tr:last-child td { border-bottom: 0; }
-  .table-wrap { overflow-x: auto; }
-  ol.steps { padding-left: 22px; }
-  ol.steps li { margin: 10px 0; }
-  .callout { background: var(--soft); border-radius: 14px; padding: 16px 20px; margin: 18px 0; }
-  .sources { columns: 2 280px; column-gap: 28px; padding-left: 18px; }
-  .sources li { break-inside: avoid; margin: 4px 0; }
-  footer { border-top: 1px solid var(--line); margin-top: 56px; padding-top: 18px; color: var(--muted); font-size: 15px; }
-  .shot { width: 100%; border-radius: 14px; border: 1px solid var(--line); margin-top: 36px; display: block; }
-  .update h3 { margin: 18px 0 4px; font-size: 18px; }
-  .update h3 .date { font-weight: 400; color: var(--muted); font-size: 15px; margin-left: 8px; }
-  .update ul { margin: 0; padding-left: 22px; }
-  .update li { margin: 4px 0; }
-</style>
-</head>
-<body>
-<main>
-  <section class="hero">
-    <h1>An AI that still works<br>when the internet doesn't.</h1>
-    <p class="lede">Survival LLM is a free AI assistant and emergency library that runs entirely on your own computer.
-      Ask it how to keep food safe in a blackout, treat a burn, or purify water, and it answers from
-      trusted sources and shows you exactly where each answer came from.</p>
-    <div class="buttons">
-      <a class="btn" id="dl-mac" href="#download">Download for Mac <span class="size">212 MB</span></a>
-      <a class="btn" id="dl-win" href="#download">Download for Windows <span class="size">25 MB</span></a>
-      <a class="btn secondary" id="dl-src" href="#source">Source code</a>
-    </div>
-    <p class="small" id="device-note">Free and open source. Set it up while you have internet; after that it needs none.</p>
-    <img class="shot" src="/survival-llm/screenshot.png" alt="Survival LLM answering a question about fridge food safety, with the cited Ready.gov article open beside it">
-  </section>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Survival LLM</title>
+    <meta name="description" content="A free, open-source AI assistant and survival library that runs on your own computer and works with no internet." />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="brangus.io" />
+    <meta property="og:title" content="Survival LLM: an AI that still works when the internet doesn't" />
+    <meta
+      property="og:description"
+      content="A free AI assistant and survival library (1.5 million offline articles) that runs on your own computer, with no internet. Shows the source of every answer. Mac and Windows."
+    />
+    <meta property="og:url" content="https://www.brangus.io/survival-llm" />
+    <meta property="og:image" content="https://www.brangus.io/survival-llm/social-card.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="628" />
+    <meta
+      property="og:image:alt"
+      content='Survival LLM answering "I&apos;m bleeding a lot from my foot. Help. What do I do?" with first-aid steps and the manuals it used'
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Survival LLM: an AI that still works when the internet doesn't" />
+    <meta
+      name="twitter:description"
+      content="A free AI assistant and survival library that runs on your own computer, with no internet. Shows the source of every answer."
+    />
+    <meta name="twitter:image" content="https://www.brangus.io/survival-llm/social-card.png" />
+    <link rel="canonical" href="https://www.brangus.io/survival-llm" />
+    <link rel="stylesheet" href="./src/css/index.css" />
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <h1>An AI that still works<br />when the internet doesn't.</h1>
+        <p class="lede">
+          Survival LLM is a free AI assistant and emergency library that runs entirely on your own computer. Ask it how to keep food safe in a blackout, treat a
+          burn, or purify water, and it answers from trusted sources and shows you exactly where each answer came from.
+        </p>
+        <div class="buttons">
+          <a class="btn" id="dl-mac" href="#download">Download for Mac <span class="size">212 MB</span></a>
+          <a class="btn" id="dl-win" href="#download">Download for Windows <span class="size">25 MB</span></a>
+          <a class="btn secondary" id="dl-src" href="#source">Source code</a>
+        </div>
+        <p class="small" id="device-note">Free and open source. Set it up while you have internet; after that it needs none.</p>
+        <img
+          class="shot"
+          src="/survival-llm/screenshot.png"
+          alt="Survival LLM answering a question about fridge food safety, with the cited Ready.gov article open beside it"
+        />
+      </section>
 
-  <h2>What it does</h2>
-  <div class="cards">
-    <div class="card"><h3>Works with no internet</h3><p>The AI model and the library live on your computer. Nothing you ask leaves it.</p></div>
-    <div class="card"><h3>Shows its sources</h3><p>Every answer lists the articles it read. Click one to read it yourself, with the exact passage highlighted.</p></div>
-    <div class="card"><h3>Made for emergencies</h3><p>Medical references, FEMA and CDC guidance, survival manuals, how-to guides, repair guides and about 930,000 Wikipedia articles.</p></div>
-  </div>
+      <h2>What it does</h2>
+      <div class="cards">
+        <div class="card">
+          <h3>Works with no internet</h3>
+          <p>The AI model and the library live on your computer. Nothing you ask leaves it.</p>
+        </div>
+        <div class="card">
+          <h3>Shows its sources</h3>
+          <p>Every answer lists the articles it read. Click one to read it yourself, with the exact passage highlighted.</p>
+        </div>
+        <div class="card">
+          <h3>Made for emergencies</h3>
+          <p>Medical references, FEMA and CDC guidance, survival manuals, how-to guides, repair guides and about 930,000 Wikipedia articles.</p>
+        </div>
+      </div>
 
-  <h2 id="download">Pick your version</h2>
-  <p>The app is the same everywhere. When it opens, it checks your computer's memory and downloads the AI model that fits.
-    More memory means a smarter model.</p>
-  <div class="table-wrap">
-  <table>
-    <thead><tr><th>Your computer</th><th>AI model it uses</th><th>Our emergency test</th><th>Model download</th></tr></thead>
-    <tbody id="tiers">
-      <tr><td>Mac with 128 GB or more memory</td><td>NVIDIA Nemotron 3.5 Super</td><td>21 of 22 right</td><td>80 GB</td></tr>
-      <tr><td>Mac with 32–96 GB</td><td>Qwen3.8 27B</td><td>21 of 22 right</td><td>18 GB</td></tr>
-      <tr><td>Windows PC with 32 GB or more</td><td>NVIDIA Nemotron 3.5 Lightning</td><td>19 of 22 right</td><td>25 GB</td></tr>
-      <tr><td>Mac or PC with 16–31 GB</td><td>IBM Granite 4.2 8B</td><td>14 of 22 right</td><td>6 GB</td></tr>
-    </tbody>
-  </table>
-  </div>
-  <p class="small">"Right" means it got the main point of official guidance right on 22 blackout and first-aid
-    questions, graded blind, in our tests on an earlier build of the library (<a id="tests-link" href="#source">how we
-    tested</a>). Smaller models make more mistakes, so the app always shows the source to check.</p>
-  <p class="small">Plus the library: a <span id="lib-full">9 GB</span> download for everything (19 GB once installed), or
-    <span id="lib-lite">1.3 GB</span> (3 GB installed) without Wikipedia and iFixit. Free disk space needed: the model's
-    size plus 5 GB, plus about 27 GB while the full library installs (10 GB for the smaller one).
-    Apple Silicon Macs (M1 or newer) with macOS 14 Sonoma or newer, and 64-bit Windows 10 or 11.</p>
+      <h2 id="download">Pick your version</h2>
+      <p>
+        The app is the same everywhere. When it opens, it checks your computer's memory and downloads the AI model that fits. More memory means a smarter model.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Your computer</th>
+              <th>AI model it uses</th>
+              <th>Our emergency test</th>
+              <th>Model download</th>
+            </tr>
+          </thead>
+          <tbody id="tiers">
+            <tr>
+              <td>Mac with 128 GB or more memory</td>
+              <td>NVIDIA Nemotron 3.5 Super</td>
+              <td>21 of 22 right</td>
+              <td>80 GB</td>
+            </tr>
+            <tr>
+              <td>Mac with 32–96 GB</td>
+              <td>Qwen3.8 27B</td>
+              <td>21 of 22 right</td>
+              <td>18 GB</td>
+            </tr>
+            <tr>
+              <td>Windows PC with 32 GB or more</td>
+              <td>NVIDIA Nemotron 3.5 Lightning</td>
+              <td>19 of 22 right</td>
+              <td>25 GB</td>
+            </tr>
+            <tr>
+              <td>Mac or PC with 16–31 GB</td>
+              <td>IBM Granite 4.2 8B</td>
+              <td>14 of 22 right</td>
+              <td>6 GB</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small">
+        "Right" means it got the main point of official guidance right on 22 blackout and first-aid questions, graded blind, in our tests on an earlier build of
+        the library (<a id="tests-link" href="#source">how we tested</a>). Smaller models make more mistakes, so the app always shows the source to check.
+      </p>
+      <p class="small">
+        Plus the library: a <span id="lib-full">9 GB</span> download for everything (19 GB once installed), or <span id="lib-lite">1.3 GB</span> (3 GB
+        installed) without Wikipedia and iFixit. Free disk space needed: the model's size plus 5 GB, plus about 27 GB while the full library installs (10 GB for
+        the smaller one). Apple Silicon Macs (M1 or newer) with macOS 14 Sonoma or newer, and 64-bit Windows 10 or 11.
+      </p>
 
-  <h2>Set it up in three steps</h2>
-  <p>Setup takes 20 minutes to about 2½ hours, depending on your computer and your internet speed. You only click for
-    about 5 minutes; the rest is downloading.</p>
-  <ol class="steps">
-    <li><strong>Download Survival LLM</strong> for <a id="dl-mac-2" href="#download">Mac</a> or <a id="dl-win-2" href="#download">Windows</a>
-      and unzip it. On Windows, right-click the zip and choose <em>Extract All</em>.</li>
-    <li><strong>Open it.</strong> On a Mac, double-click <em>Survival LLM</em>. On Windows, open the extracted folder and
-      double-click <em>Survival LLM.bat</em>.</li>
-    <li><strong>Follow the setup.</strong> Pick a library and an AI model on one screen (the best model for your computer
-      is already picked) and click <em>Download</em>. The app downloads the model, the library and, on Windows, the AI
-      engine (it's built into the Mac app). If your internet drops or you quit, it picks up where it left off. Let it
-      finish while you're online.</li>
-  </ol>
-  <div class="callout">
-    <strong>The first time you open it,</strong> your computer warns you, because the app isn't sold through an app store.
-    <br><strong>Mac:</strong> click <em>Done</em>, open <em>System Settings &gt; Privacy &amp; Security</em>, scroll down to
-    "Survival LLM was blocked", click <em>Open Anyway</em> and confirm with your password. You only do this once.
-    <br><strong>Windows:</strong> click <em>More info</em>, then <em>Run anyway</em>.
-  </div>
+      <h2>Set it up in three steps</h2>
+      <p>
+        Setup takes 20 minutes to about 2½ hours, depending on your computer and your internet speed. You only click for about 5 minutes; the rest is
+        downloading.
+      </p>
+      <ol class="steps">
+        <li>
+          <strong>Download Survival LLM</strong> for <a id="dl-mac-2" href="#download">Mac</a> or <a id="dl-win-2" href="#download">Windows</a> and unzip it. On
+          Windows, right-click the zip and choose <em>Extract All</em>.
+        </li>
+        <li>
+          <strong>Open it.</strong> On a Mac, double-click <em>Survival LLM</em>. On Windows, open the extracted folder and double-click
+          <em>Survival LLM.bat</em>.
+        </li>
+        <li>
+          <strong>Follow the setup.</strong> Pick a library and an AI model on one screen (the best model for your computer is already picked) and click
+          <em>Download</em>. The app downloads the model, the library and, on Windows, the AI engine (it's built into the Mac app). If your internet drops or
+          you quit, it picks up where it left off. Let it finish while you're online.
+        </li>
+      </ol>
+      <div class="callout">
+        <strong>The first time you open it,</strong> your computer warns you, because the app isn't sold through an app store. <br /><strong>Mac:</strong> click
+        <em>Done</em>, open <em>System Settings &gt; Privacy &amp; Security</em>, scroll down to "Survival LLM was blocked", click <em>Open Anyway</em> and
+        confirm with your password. You only do this once. <br /><strong>Windows:</strong> click <em>More info</em>, then <em>Run anyway</em>.
+      </div>
 
-  <h2>What's in the library</h2>
-  <p>Plain-text copies of openly licensed (some for non-commercial use only) and public-domain references, searchable
-    in a fraction of a second:</p>
-  <ul class="sources">
-    <li>About 930,000 of Wikipedia's most-read articles</li>
-    <li>WikiMed medical encyclopedia</li>
-    <li>MedlinePlus (U.S. National Library of Medicine)</li>
-    <li>UK Medicines A to Z (public sector information)</li>
-    <li>WikEM emergency medicine</li>
-    <li>Ready.gov (FEMA) emergency guides</li>
-    <li>CDC travelers' health</li>
-    <li>U.S. military medicine and survival manuals</li>
-    <li>Risk references for estimating micromorts: life tables and U.S. death rates</li>
-    <li>wikiHow how-to guides</li>
-    <li>iFixit repair guides</li>
-    <li>Appropedia (appropriate technology)</li>
-    <li>Q&amp;A on home repair, cooking, gardening, the outdoors and ham radio (Stack Exchange)</li>
-  </ul>
-  <p class="small">Each source keeps its own license, shown with every article; see the
-    <a id="sources-link" href="#source">full list with licenses</a>.</p>
+      <h2>What's in the library</h2>
+      <p>Plain-text copies of openly licensed (some for non-commercial use only) and public-domain references, searchable in a fraction of a second:</p>
+      <ul class="sources">
+        <li>About 930,000 of Wikipedia's most-read articles</li>
+        <li>WikiMed medical encyclopedia</li>
+        <li>MedlinePlus (U.S. National Library of Medicine)</li>
+        <li>UK Medicines A to Z (public sector information)</li>
+        <li>WikEM emergency medicine</li>
+        <li>Ready.gov (FEMA) emergency guides</li>
+        <li>CDC travelers' health</li>
+        <li>U.S. military medicine and survival manuals</li>
+        <li>Risk references for estimating micromorts: life tables and U.S. death rates</li>
+        <li>wikiHow how-to guides</li>
+        <li>iFixit repair guides</li>
+        <li>Appropedia (appropriate technology)</li>
+        <li>Q&amp;A on home repair, cooking, gardening, the outdoors and ham radio (Stack Exchange)</li>
+      </ul>
+      <p class="small">Each source keeps its own license, shown with every article; see the <a id="sources-link" href="#source">full list with licenses</a>.</p>
 
-  <h2>Good to know</h2>
-  <div class="cards">
-    <div class="card"><h3>It can be wrong</h3><p>AI models make mistakes, the small ones more often. Every answer shows the articles it used, so you can check.</p></div>
-    <div class="card"><h3>Private</h3><p>No account, no tracking. Your questions never leave your computer, and once set up it works with the internet off.</p></div>
-    <div class="card"><h3>Your own files</h3><p>Add PDFs, Word documents, ebooks and notes, like your generator's manual or your family's
-      emergency plan, and the AI searches them too. They stay on your computer.</p></div>
-    <div class="card"><h3>Updates</h3><p>Check for updates, at the bottom of the app, installs a new version in one click and keeps your
-      models, library and files.</p></div>
-    <div class="card"><h3>Battery</h3><p>On a MacBook Pro we measured about 100 W while it answers, for 5 to 40 seconds per question: a full battery
-      answers roughly 100 to 300. A small generator or power station runs it easily.</p></div>
-  </div>
+      <h2>Good to know</h2>
+      <div class="cards">
+        <div class="card">
+          <h3>It can be wrong</h3>
+          <p>AI models make mistakes, the small ones more often. Every answer shows the articles it used, so you can check.</p>
+        </div>
+        <div class="card">
+          <h3>Private</h3>
+          <p>No account, no tracking. Your questions never leave your computer, and once set up it works with the internet off.</p>
+        </div>
+        <div class="card">
+          <h3>Your own files</h3>
+          <p>
+            Add PDFs, Word documents, ebooks and notes, like your generator's manual or your family's emergency plan, and the AI searches them too. They stay on
+            your computer.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Updates</h3>
+          <p>Check for updates, at the bottom of the app, installs a new version in one click and keeps your models, library and files.</p>
+        </div>
+        <div class="card">
+          <h3>Battery</h3>
+          <p>
+            On a MacBook Pro we measured about 100 W while it answers, for 5 to 40 seconds per question: a full battery answers roughly 100 to 300. A small
+            generator or power station runs it easily.
+          </p>
+        </div>
+      </div>
 
-  <h2 id="updates">Update notes</h2>
-  <p>Already have it? Click <em>Check for updates</em> at the bottom of the app.</p>
-  <div class="update">
-    <h3>0.4.1 <span class="date">October 29, 2026</span></h3>
-    <ul>
-      <li>Windows: on a PC without Microsoft's free WebView2, which the app window needs, the app now installs it with
-        Microsoft's own installer (a minute or so, the first time) instead of opening as a broken page. Thanks to
-        Dueynkol for the report and the screenshot.</li>
-    </ul>
-    <h3>0.4.0 <span class="date">October 29, 2026</span></h3>
-    <ul>
-      <li><strong>Simpler first-time setup:</strong> one screen to pick the library and the AI model, with the best
-        model for your computer already picked. While it downloads, you see the speed and the time left for each part.
-        It keeps the computer awake, retries by itself when the internet drops, and picks up where it left off if you
-        quit.</li>
-      <li><strong>Switch libraries:</strong> click the article count at the top (or <em>Search library</em>, then
-        <em>Switch or move the library</em>) to change between Essentials and Everything. Your library keeps working
-        while the other one downloads. Thanks to jubishop for the idea.</li>
-      <li><strong>Choose where things live:</strong> move the library to another folder or an external drive, and pick
-        which folder <em>Your files</em> searches. New installs keep the library out of sight in the app's own folder;
-        existing ones stay where they are. Thanks to Kronopath and remjax.</li>
-      <li><strong>A cleaner library:</strong> both libraries were rebuilt without about 2,700 repeated pages, so
-        searches show more different articles. If you already have one, the app offers the new version (1.3 GB for
-        Essentials, 8.7 GB for Everything), and yours keeps working until it's in. Thanks to ahalekelly.</li>
-      <li>If a model download fails because an older Ollama app is running on your computer, the app now says so and
-        what to do, and the message fits on screen. Thanks to zackbloom.</li>
-      <li>Smaller fixes: a reply to "remember this" or "forget that" no longer gets a Sources line, a made-up article
-        title next to a real collection's name is caught, and an answer that never finished no longer says "reasoning
-        before it answered".</li>
-    </ul>
-    <h3>0.3.4 <span class="date">October 27, 2026</span></h3>
-    <ul>
-      <li><strong>Reasoning setting:</strong> next to Send, choose how much the AI may think before it answers: Off,
-        1,000, 4,000 or 16,000 tokens, or no limit. At the limit its thinking stops and it answers from what it has, so
-        a model stuck reasoning in circles still answers. It replaces "Think harder".</li>
-      <li>When the AI looked things up but never wrote an answer, it now gets the best articles it found and tries once
-        more, instead of showing nothing. Thanks to betsyisaac for finding this.</li>
-      <li>Ask it to look something up and it searches the library, even if it first answered from memory. Answers say
-        whether they came from memory, from articles it read, or from search results it didn't open.</li>
-      <li>A warning when Reasoning or Length limit is set to no limit.</li>
-    </ul>
-    <h3>0.3.3 <span class="date">October 27, 2026</span></h3>
-    <ul>
-      <li>Mac: quitting with Cmd+Q now also stops the AI engine and frees the memory its model used. Before, it kept
-        running in the background. Thanks to wigginthethird for the report and the fix.</li>
-      <li>Library search no longer shows several copies of the same page, so the AI sees more different articles.
-        Thanks to ahalekelly.</li>
-    </ul>
-    <h3>0.3.2 <span class="date">October 27, 2026</span></h3>
-    <ul>
-      <li>The AI no longer saves your question as a memory note.</li>
-      <li>Some answers no longer open with a made-up "Sources:" line that listed the AI's search commands instead of articles.</li>
-      <li>Show reasoning reads more clearly: it says when you stopped it, the time shown is how long it thought, and long
-        reasoning scrolls with the page.</li>
-      <li>Windows: cleans up an empty folder that earlier updates could leave behind.</li>
-    </ul>
-    <h3>0.3.1 <span class="date">October 27, 2026</span></h3>
-    <ul>
-      <li><strong>Show reasoning:</strong> under each answer, open what the AI thought before it answered, with the searches
-        and articles it read in between. It stays hidden until you click it. Most models reason first only when
-        <em>Think harder</em> is ticked.</li>
-    </ul>
-    <h3>0.3.0 <span class="date">October 26, 2026</span></h3>
-    <ul>
-      <li><strong>Memory:</strong> tell it about yourself, like a family member's allergy or the generator you own, and it
-        keeps a short note for later chats. See and edit every note under <em>Memory</em>, or turn its saving off.</li>
-      <li>Downloads now work on computers whose network or antivirus uses its own certificates.</li>
-    </ul>
-  </div>
-  <p class="small"><a id="releases-link" href="#source">All releases on GitHub</a></p>
+      <h2 id="updates">Update notes</h2>
+      <p>Already have it? Click <em>Check for updates</em> at the bottom of the app.</p>
+      <div class="update">
+        <h3>0.4.1 <span class="date">October 29, 2026</span></h3>
+        <ul>
+          <li>
+            Windows: on a PC without Microsoft's free WebView2, which the app window needs, the app now installs it with Microsoft's own installer (a minute or
+            so, the first time) instead of opening as a broken page. Thanks to Dueynkol for the report and the screenshot.
+          </li>
+        </ul>
+        <h3>0.4.0 <span class="date">October 29, 2026</span></h3>
+        <ul>
+          <li>
+            <strong>Simpler first-time setup:</strong> one screen to pick the library and the AI model, with the best model for your computer already picked.
+            While it downloads, you see the speed and the time left for each part. It keeps the computer awake, retries by itself when the internet drops, and
+            picks up where it left off if you quit.
+          </li>
+          <li>
+            <strong>Switch libraries:</strong> click the article count at the top (or <em>Search library</em>, then <em>Switch or move the library</em>) to
+            change between Essentials and Everything. Your library keeps working while the other one downloads. Thanks to jubishop for the idea.
+          </li>
+          <li>
+            <strong>Choose where things live:</strong> move the library to another folder or an external drive, and pick which folder
+            <em>Your files</em> searches. New installs keep the library out of sight in the app's own folder; existing ones stay where they are. Thanks to
+            Kronopath and remjax.
+          </li>
+          <li>
+            <strong>A cleaner library:</strong> both libraries were rebuilt without about 2,700 repeated pages, so searches show more different articles. If you
+            already have one, the app offers the new version (1.3 GB for Essentials, 8.7 GB for Everything), and yours keeps working until it's in. Thanks to
+            ahalekelly.
+          </li>
+          <li>
+            If a model download fails because an older Ollama app is running on your computer, the app now says so and what to do, and the message fits on
+            screen. Thanks to zackbloom.
+          </li>
+          <li>
+            Smaller fixes: a reply to "remember this" or "forget that" no longer gets a Sources line, a made-up article title next to a real collection's name
+            is caught, and an answer that never finished no longer says "reasoning before it answered".
+          </li>
+        </ul>
+        <h3>0.3.4 <span class="date">October 27, 2026</span></h3>
+        <ul>
+          <li>
+            <strong>Reasoning setting:</strong> next to Send, choose how much the AI may think before it answers: Off, 1,000, 4,000 or 16,000 tokens, or no
+            limit. At the limit its thinking stops and it answers from what it has, so a model stuck reasoning in circles still answers. It replaces "Think
+            harder".
+          </li>
+          <li>
+            When the AI looked things up but never wrote an answer, it now gets the best articles it found and tries once more, instead of showing nothing.
+            Thanks to betsyisaac for finding this.
+          </li>
+          <li>
+            Ask it to look something up and it searches the library, even if it first answered from memory. Answers say whether they came from memory, from
+            articles it read, or from search results it didn't open.
+          </li>
+          <li>A warning when Reasoning or Length limit is set to no limit.</li>
+        </ul>
+        <h3>0.3.3 <span class="date">October 27, 2026</span></h3>
+        <ul>
+          <li>
+            Mac: quitting with Cmd+Q now also stops the AI engine and frees the memory its model used. Before, it kept running in the background. Thanks to
+            wigginthethird for the report and the fix.
+          </li>
+          <li>Library search no longer shows several copies of the same page, so the AI sees more different articles. Thanks to ahalekelly.</li>
+        </ul>
+        <h3>0.3.2 <span class="date">October 27, 2026</span></h3>
+        <ul>
+          <li>The AI no longer saves your question as a memory note.</li>
+          <li>Some answers no longer open with a made-up "Sources:" line that listed the AI's search commands instead of articles.</li>
+          <li>
+            Show reasoning reads more clearly: it says when you stopped it, the time shown is how long it thought, and long reasoning scrolls with the page.
+          </li>
+          <li>Windows: cleans up an empty folder that earlier updates could leave behind.</li>
+        </ul>
+        <h3>0.3.1 <span class="date">October 27, 2026</span></h3>
+        <ul>
+          <li>
+            <strong>Show reasoning:</strong> under each answer, open what the AI thought before it answered, with the searches and articles it read in between.
+            It stays hidden until you click it. Most models reason first only when <em>Think harder</em> is ticked.
+          </li>
+        </ul>
+        <h3>0.3.0 <span class="date">October 26, 2026</span></h3>
+        <ul>
+          <li>
+            <strong>Memory:</strong> tell it about yourself, like a family member's allergy or the generator you own, and it keeps a short note for later chats.
+            See and edit every note under <em>Memory</em>, or turn its saving off.
+          </li>
+          <li>Downloads now work on computers whose network or antivirus uses its own certificates.</li>
+        </ul>
+      </div>
+      <p class="small"><a id="releases-link" href="#source">All releases on GitHub</a></p>
 
-  <footer id="source">
-    Survival LLM is open source (MIT license). Code, library tools and source attributions:
-    <a id="repo-link" href="#">GitHub</a>.
-  </footer>
-</main>
-<script>
-  const REPO = "https://github.com/anonnerdfrenzy/survival-llm";
-  const LINKS = {
-    mac: REPO + "/releases/latest/download/Survival-LLM-mac.zip",
-    windows: REPO + "/releases/latest/download/Survival-LLM-windows.zip",
-    repo: REPO,
-  };
-  const set = (id, url) => { const el = document.getElementById(id); if (el && url) el.href = url; };
-  set("dl-mac", LINKS.mac); set("dl-mac-2", LINKS.mac);
-  set("dl-win", LINKS.windows); set("dl-win-2", LINKS.windows);
-  set("tests-link", LINKS.repo + "#how-the-models-did");
-  set("dl-src", LINKS.repo); set("repo-link", LINKS.repo); set("sources-link", LINKS.repo + "/blob/main/SOURCES.md");
-  set("releases-link", LINKS.repo + "/releases");
-
-  // Put the download for this visitor's computer first; phones and tablets get told it's for computers.
-  const ua = navigator.userAgent;
-  const phone = /iPhone|iPad|Android/i.test(ua) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua));
-  const win = /Windows/i.test(ua), mac = /Macintosh|Mac OS X/i.test(ua) && !phone;
-  const macBtn = document.getElementById("dl-mac"), winBtn = document.getElementById("dl-win");
-  if (win) { winBtn.parentNode.insertBefore(winBtn, macBtn); macBtn.classList.add("secondary"); }
-  else if (mac) winBtn.classList.add("secondary");
-  if (phone) document.getElementById("device-note").textContent =
-    "Survival LLM runs on Mac and Windows computers, not phones. Open this page on your computer to download it.";
-</script>
-</body>
+      <footer id="source">
+        Survival LLM is open source (MIT license). Code, library tools and source attributions:
+        <a id="repo-link" href="#">GitHub</a>.
+      </footer>
+    </main>
+    <script src="./src/js/index.js"></script>
+  </body>
 </html>

@@ -10,6 +10,7 @@ import http.client
 import io
 import json
 import os
+from pathlib import Path
 import sys
 import tempfile
 import threading
@@ -269,7 +270,7 @@ for n, chunk in enumerate((data[:cut], data[cut:])):
     path = os.path.join(src, f"part{n}")
     with open(path, "wb") as f:
         f.write(chunk)
-    parts.append({"url": "file://" + path, "bytes": len(chunk), "sha256": hashlib.sha256(chunk).hexdigest()})
+    parts.append({"url": Path(path).as_uri(), "bytes": len(chunk), "sha256": hashlib.sha256(chunk).hexdigest()})
 server.library_packs = lambda: [{"id": "lite", "label": "Essentials: test (0 GB)", "gb": 0.0, "parts": parts,
                                  "version": "2026-10-28", "install_bytes": 10_000}]
 work = server.LIB + ".download"
