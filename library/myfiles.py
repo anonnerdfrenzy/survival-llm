@@ -22,8 +22,11 @@ KEY = "my-files"
 LABEL = "Your files"
 ID_OFFSET = 1_000_000_000  # their passages get ids above the library's, so one id names one passage
 KINDS = {".pdf": "PDF", ".docx": "Word", ".odt": "OpenDocument", ".epub": "EPUB", ".html": "web page",
-         ".htm": "web page", ".txt": "text", ".md": "text", ".markdown": "text", ".csv": "text"}
-CANT_READ = "Survival LLM can't read this kind of file. It reads PDF, Word, EPUB, web pages and text files."
+         ".htm": "web page", ".txt": "text", ".md": "text", ".markdown": "text", ".csv": "text",
+         ".jpg": "photo", ".jpeg": "photo", ".png": "photo", ".tif": "photo", ".tiff": "photo", ".bmp": "photo"}
+IMAGES = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp")
+CANT_READ = ("Survival LLM can't read this kind of file. It reads PDF, Word, EPUB, web pages, text files and, on "
+             "Windows, photos and scans.")
 MAX_TEXT = 50_000_000  # characters kept from one file (a 1,000-page book is about 3 million)
 IGNORED = re.compile(r"^(\.|~\$)|^(desktop\.ini|thumbs\.db|icon\r)$|\.(part|crdownload|download|tmp)$", re.I)
 
@@ -302,7 +305,7 @@ def extract(path):
     if ext not in KINDS:
         raise Unreadable(CANT_READ)
     title, text = {".pdf": _pdf, ".docx": _docx, ".odt": _odt, ".epub": _epub,
-                   ".html": _html_file, ".htm": _html_file}.get(ext, _plain)(path)
+                   ".html": _html_file, ".htm": _html_file}.get(ext, _image if ext in IMAGES else _plain)(path)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if not text:
         raise Unreadable("There's no text in this file.")
@@ -335,9 +338,9 @@ def _pdf(path):
         except Exception:
             pages.append("")
     text = "\n\n".join(p for p in pages if p)
-    if len(text) < 40:
-        raise Unreadable("This PDF is pictures of pages (a scan or photo) with no text in it. "
-                         "Survival LLM can't read those yet.")
+    if len(text) < 40:  # a scan, or photos of pages: read it with the system's OCR where there is one
+        text = _ocr(path, "This PDF is pictures of pages (a scan or photo) with no text in it, and the OCR "
+                          "found no readable text in it either.")
     title = ""
     try:
         title = str((reader.metadata or {}).get("/Title") or "")
@@ -347,6 +350,31 @@ def _pdf(path):
     if re.fullmatch(r"(?i)(untitled.*|document\d*|.*\.(docx?|pdf|indd))", title):
         title = ""
     return title, text
+
+
+OCR_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "winocr.ps1")
+NO_OCR = "Survival LLM can only read photos and scans on Windows 10 or 11, with Windows' built-in OCR."
+
+
+def _ocr(path, no_text):
+    """Text read off a scan or photo with Windows' own OCR engine (library/winocr.ps1); Unreadable with no_text
+    when it finds nothing, or NO_OCR where there is no OCR."""
+    if os.name != "nt" or not os.path.exists(OCR_SCRIPT):
+        raise Unreadable(NO_OCR)
+    import subprocess
+    try:
+        done = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", OCR_SCRIPT, path],
+                              capture_output=True, timeout=900, creationflags=subprocess.CREATE_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Unreadable(no_text) from None
+    text = done.stdout.decode("utf-8", "replace").replace("\r\n", "\n").strip()
+    if done.returncode != 0 or len(text) < 40:
+        raise Unreadable(no_text)
+    return text
+
+
+def _image(path):
+    return "", _ocr(path, "Windows' OCR found no readable text in this photo.")
 
 
 def _pdf_paragraphs(text):
