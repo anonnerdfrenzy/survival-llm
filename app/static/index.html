@@ -98,6 +98,26 @@
   </div>
   <p class="meta" id="models-intro"></p>
   <div id="models-list"></div>
+  <details id="endpoint-box" class="endpoint">
+    <summary>Use a model server you already run (OpenAI-compatible)</summary>
+    <p class="meta">llama.cpp's server, LM Studio, vLLM, Rapid-MLX, KoboldCpp and Ollama's own OpenAI API all work.
+      Survival LLM talks to it on this computer or your own network, so it still needs no internet, and the library,
+      your files and the AI's notes stay where they are. The model can be any one that server offers.</p>
+    <label class="field">Address
+      <input id="endpoint-url" type="url" spellcheck="false" placeholder="http://127.0.0.1:8080/v1"></label>
+    <label class="field">Model
+      <input id="endpoint-model" list="endpoint-models" spellcheck="false" placeholder="ask Test, then pick one"></label>
+    <datalist id="endpoint-models"></datalist>
+    <label class="field">API key
+      <input id="endpoint-key" type="password" autocomplete="off" spellcheck="false"
+        placeholder="only if your server asks for one"></label>
+    <div class="prompt-actions">
+      <span id="endpoint-status" class="meta" aria-live="polite"></span>
+      <button id="endpoint-forget" class="ghost" type="button" hidden>Go back to Ollama</button>
+      <button id="endpoint-test" class="ghost" type="button">Test</button>
+      <button id="endpoint-save" class="primary" type="button">Use it</button>
+    </div>
+  </details>
 </dialog>
 <dialog id="prompt-dialog" class="dialog wide" aria-labelledby="prompt-title">
   <div class="dialog-head">

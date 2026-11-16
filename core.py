@@ -2,7 +2,8 @@
 
 chat_events() runs one turn of a conversation: it streams the model's answer and runs its
 library tools, yielding plain dicts so each front end can show progress its own way.
-Talks only to the local Ollama server, so it works with Wi-Fi off.
+Talks to the local Ollama server, or to an OpenAI-compatible server of the person's own (endpoint.py), so it works
+with Wi-Fi off either way.
 """
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import urllib.error
 import urllib.request
 
+import endpoint
 from library.search import STOPWORDS, TOPICS
 from memory import _stems, asked_memory, forgets
 
@@ -82,6 +84,8 @@ _shown = {}  # model -> Ollama's /api/show answer
 
 def _show(model):
     if model not in _shown:
+        if endpoint.on():  # its own server reports no model details the Ollama way
+            return {}
         try:
             _shown[model] = _post("/api/show", {"model": model})
         except (OSError, ValueError):
@@ -107,6 +111,8 @@ def _post(path, body, stream=False):
 
 
 def capabilities(model):
+    if endpoint.on():
+        return endpoint.capabilities(model)
     return set(_show(model).get("capabilities") or [])
 
 
@@ -218,6 +224,9 @@ def run_tool(library, name, args):
 
 
 def _stream(model, messages, tools, think, options):
+    if endpoint.on():  # the person's own OpenAI-compatible server, which streams the same chunks
+        yield from endpoint.stream(model, messages, tools, options)
+        return
     body = {"model": model, "messages": messages, "stream": True, "keep_alive": "15m", "options": options}
     if tools:
         body["tools"] = tools
@@ -825,6 +834,8 @@ def trim(messages, budget=60000):
 
 
 def installed_models():
+    if endpoint.on():
+        return endpoint.models()
     try:
         with urllib.request.urlopen(HOST + "/api/tags", timeout=5) as resp:
             return [m["name"] for m in json.load(resp).get("models", [])]

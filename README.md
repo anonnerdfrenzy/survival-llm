@@ -110,6 +110,27 @@ its search results: Nemotron Super 6 (mostly answering from memory and naming Re
 Gemma 3, Granite 2 and Qwen3.8 27B 1. So the app checks that line against what the model opened or saw, and replaces
 a line that names anything else with the list of articles it actually read.
 
+## Use a model server you already run
+
+If you already run an OpenAI-compatible server on your computer, Survival LLM can answer through it instead of
+Ollama: llama.cpp's `llama-server`, LM Studio, vLLM, Rapid-MLX, KoboldCpp, or Ollama's own OpenAI API. Open
+**Model**, open **Use a model server you already run**, put in its address (`http://127.0.0.1:8080/v1`, or just
+`127.0.0.1:8080`), press **Test** to see the models it offers, then pick one and press **Use it**. Where it asks for
+a key, leave it empty if your server doesn't want one. **Go back to Ollama** undoes it, and the app deletes nothing
+of yours either way.
+
+It works the same way: the library search, the Sources line, your files and the AI's notes all stay, and the
+address is on your computer or your own network, so it still needs no internet. Two differences: the app can't load
+the model for you (start your server before asking), and **Reasoning** is your server's own setting, though whatever
+the model thinks still streams through to the Reasoning view. Nothing in the app depends on any one server: it speaks
+the OpenAI API, and `/v1/models` plus `/v1/chat/completions` with tool calls is the whole of it.
+
+From the terminal, the same choice without the window:
+
+```bash
+SURVIVAL_LLM_ENDPOINT=http://127.0.0.1:8080/v1=qwen3.5-9b-4bit python3 chat.py "How long is fridge food safe?"
+```
+
 ## How it works
 
 ```
@@ -120,6 +141,8 @@ your question ─► local model (Ollama) ─► search_library ─► SQLite fu
 
 - `app/server.py` serves the chat page on `127.0.0.1` only and runs each turn through `core.py`.
 - `core.py` streams the model's answer and runs its library tools: `search_library`, `read_article`, `show_article`.
+- `endpoint.py` is the other engine: a model server the person already runs, spoken to in the OpenAI API. It hands
+  `core.py` the same chunks Ollama does (`endpoint.json` in the settings folder remembers which).
 - `library/search.py` searches `index.sqlite` (FTS5, BM25 ranking over ~1,500-character passages, official sources ranked higher) and reads the plain-text Markdown shards.
 - `memory.py` keeps the AI's notes about the person (`survival-llm-memory.txt`, with the app's settings) and, while the person allows it, `core.py` gives the model one short extra turn after answers to messages about the person or their family, to say what to remember, change or forget (a JSON reply the app checks and applies). The notes, today's date and the names of the person's files are added after the instructions when a chat starts.
 - `library/myfiles.py` reads the person's own files into a small index of their own (kept with the app's settings) and searches it together with the library.

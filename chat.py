@@ -1,6 +1,7 @@
 """Terminal chat with a local model that can search the offline library.
 
-Usage: chat.py [--model NAME] [question ...]   (default: the first chat model Ollama has)
+Usage: chat.py [--model NAME] [question ...]   (default: the first chat model Ollama has, or the person's own
+OpenAI-compatible server when the app is set to use one: SURVIVAL_LLM_ENDPOINT=http://127.0.0.1:8080/v1=model)
 With a question it answers once and exits; without one it opens a chat.
 In a chat: /sources lists what the last answer used, /open N opens one, /reasoning shows its reasoning, /new,
 /think off|short|medium|long|none sets how much it may reason before answering, /limit normal|long|none sets how long
@@ -12,6 +13,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import endpoint  # noqa: E402
 from core import LENGTH_LIMITS, REASONING_LIMITS, capabilities, chat_events, installed_models, system_prompt, trim  # noqa: E402
 from library.search import DB_PATH, Library  # noqa: E402
 
@@ -100,6 +102,9 @@ def main():
     if not model:
         names = [m for m in installed_models() or [] if not any(x in m for x in ("embed", "bge-", "nomic", "minilm"))]
         if not names:
+            if endpoint.on():
+                sys.exit(f"No model at {endpoint.url()}: {endpoint.last_error() or 'it offers none'}. "
+                         "Check that your server is running, or use --model.")
             sys.exit("No AI model found. Start Ollama, download a model (ollama pull granite4.2:8b), or use --model.")
         model = names[0]
     library = None
