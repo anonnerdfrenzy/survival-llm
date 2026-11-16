@@ -40,6 +40,7 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+import endpoint  # noqa: E402
 from core import HOST, capabilities, chat_events, installed_models, system_prompt, trim  # noqa: E402
 from library import myfiles, search  # noqa: E402
 from memory import MAX_CHARS as MEMORY_MAX, Memory, parse as parse_notes, prompt_section, size as notes_size  # noqa: E402
@@ -114,6 +115,7 @@ elif os.name == "nt":
 else:
     APP_DIR = os.path.join(os.path.expanduser("~"), ".survival-llm")
 STATE = os.path.join(APP_DIR, "server.json")
+endpoint.set_folder(APP_DIR)  # endpoint.json, beside it: the person's own OpenAI-compatible server, if they use one
 CUSTOM_PROMPT = os.path.join(APP_DIR, "instructions.txt")  # the person's own edit of the AI's instructions
 # The person's own files: a folder they can see, beside the library folder rather than in it (installing a library
 # pack replaces that folder), and its index, kept with the settings.
@@ -571,13 +573,23 @@ def loaded_models():
 
 
 def friendly_error(exc):
-    """Plain-language explanation of an Ollama or network failure."""
+    """Plain-language explanation of an Ollama, endpoint or network failure."""
     if isinstance(exc, urllib.error.HTTPError):
         try:
             detail = json.loads(exc.read().decode("utf-8", "replace")).get("error", "")
         except (ValueError, OSError):
             detail = ""
+        if not isinstance(detail, str):
+            detail = str(detail or "")
         low = detail.lower()
+        if endpoint.on():  # the person's own server, which says what it minds in its own words
+            if exc.code in (401, 403):
+                return "Your server refused the API key. Check the key under Model."
+            if exc.code == 404 or "not found" in low:
+                return "Your server doesn't have that model. Pick one it offers under Model, or check its name there."
+            if exc.code == 503:
+                return "Your server isn't ready yet, most likely still loading the model. Try again in a moment."
+            return f"Your server reported a problem: {detail or exc.reason}."
         if exc.code == 404 or "not found" in low:
             return "This model isn't installed. Open Model at the top to download it or pick another."
         if "newer version" in low or "requires" in low and "ollama" in low:
@@ -588,12 +600,21 @@ def friendly_error(exc):
     if getattr(exc, "errno", None) == errno.ENOSPC:
         return "The disk is full. Free up some space, then try again."
     reason = getattr(exc, "reason", exc)
+    if endpoint.on():  # nothing is listening at the address saved under Model, or it stopped answering
+        return f"Your own server at {endpoint.url()} didn't answer ({endpoint.reason(exc)}). Check that it is " \
+               f"running, and that the address under Model is right."
     if isinstance(reason, ConnectionRefusedError) or "refused" in str(reason).lower():
         start_ollama()
         return "The AI engine (Ollama) isn't running. Starting it now; try again in a few seconds."
     if "timed out" in str(reason).lower():
         return "The AI engine took too long to answer. Try again, or pick a faster model under Model."
     return f"Something went wrong: {exc}"
+
+
+def endpoint_report():
+    """The person's own server for the Model window: whether it is in use, where, and the key never itself."""
+    return {"on": endpoint.on(), "url": endpoint.url(), "model": endpoint.model(),
+            "key": bool(endpoint.key()), "error": endpoint.last_error()}
 
 
 # ---------- background jobs: model downloads, library installs, warm-up ----------
@@ -1158,7 +1179,7 @@ def setup_step(plan):
         label = next((p["label"] for p in library_packs() if p["id"] == pack), pack)
         return "library", f"library:{pack}", label, library_worker, (pack,)
     model = plan.get("model")
-    if not model:
+    if not model or endpoint.on():  # their own server answers now: nothing to download from Ollama
         return None
     models = visible_models(installed_models())
     if models is None:  # the AI engine isn't answering
@@ -1678,7 +1699,8 @@ class Handler(BaseHTTPRequestHandler):
         if time.monotonic() - my_files_checked[0] > 30:  # picks up files changed or added in the folder itself
             check_my_files()
         models = visible_models(installed_models())
-        if models is None:
+        own = endpoint.on()  # answers come from the person's own server, not from Ollama
+        if models is None and not own:
             start_ollama()
         app, binary = ollama_locations()
         info = engine_info()
@@ -1686,7 +1708,7 @@ class Handler(BaseHTTPRequestHandler):
         docs, sources = lib.stats() if lib else (0, 0)
         mine = lib.mine.stats()[0] if lib and lib.mine else 0
         chat_models = [m.removesuffix(":latest") for m in models or [] if not any(x in m for x in NOT_CHAT)]
-        catalog = machine_catalog(chat_models)
+        catalog = [] if own else machine_catalog(chat_models)
         if HIDDEN["models"]:  # bin/dev --new-user: these "download" in seconds, so time estimates leave them out
             for c in catalog:
                 c["preview_cached"] = any((catalog_entry(m) or {}).get("key") == c["key"] for m in HIDDEN["models"])
@@ -1694,13 +1716,15 @@ class Handler(BaseHTTPRequestHandler):
         with dl_lock:
             jobs = [dict(j) for j in downloads.values()]
         return {
-            "ollama": models is not None, "ollama_installed": bool(app or binary), "ollama_starting": ollama_starting(),
+            "ollama": models is not None,  # an AI engine is answering: Ollama, or the person's own server
+            "ollama_installed": bool(app or binary), "ollama_starting": ollama_starting(),
+            "endpoint": endpoint_report(),
             "engine": {"downloadable": bool(info and ENGINE and not (app or binary)),
                        "gb": round(info["bytes"] / 1e9, 1) if info else None,
-                       "running": running_engine() if models is not None else None},
+                       "running": running_engine() if models is not None and not own else None},
             "models": [{"model": m, "name": friendly_name(m), "tested": bool(catalog_entry(m))} for m in chat_models],
             "default_model": best or (chat_models or [None])[0],
-            "loaded": loaded_models() if models is not None else [],
+            "loaded": [] if own else (loaded_models() if models is not None else []),
             "warming": [m for m, s in warming.items() if s == "loading"],
             "catalog": catalog, "downloads": jobs,
             "library": {"articles": docs, "sources": sources, "pack": (installed_pack() or {}).get("id")} if docs else None,
@@ -1794,6 +1818,26 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/pull":
             started = start_job(f"model:{model}", friendly_name(model), pull_worker, model)
             return self._send(200 if started else 409, {"ok": started})
+        if url.path == "/api/endpoint":  # the person's own OpenAI-compatible server, instead of Ollama
+            action = str(body.get("action") or "save")
+            if action == "forget":
+                endpoint.forget()
+                return self._send(200, {"ok": True, "endpoint": endpoint_report()})
+            address = endpoint.clean_url(body.get("url"))
+            if not re.match(r"^https?://[^\s/]+", address):
+                return self._send(400, {"error": "The address should look like http://127.0.0.1:8080/v1 "
+                                                 "(or http://192.168.1.20:8080)."})
+            api_key = body.get("key")
+            api_key = api_key.strip() if isinstance(api_key, str) and api_key.strip() else ""
+            if action == "test":
+                names, problem = endpoint.probe(address, api_key or endpoint.key())
+                return self._send(200, {"ok": not problem, "models": names, "error": problem})
+            if not model:
+                return self._send(400, {"error": "Pick a model the server offers, or type its name."})
+            endpoint.save(address, model, api_key)
+            names, problem = endpoint.probe()  # now from what was saved, so a blank key used the saved one
+            return self._send(200, {"ok": True, "models": names, "error": problem,
+                                    "endpoint": endpoint_report()})
         if url.path == "/api/library":
             pack = str(body.get("pack", ""))
             busy = library_busy()
@@ -1862,7 +1906,8 @@ class Handler(BaseHTTPRequestHandler):
             setup_wake.set()
             return self._send(200, {"ok": True})
         if url.path == "/api/warm":
-            warm_model(model)
+            if not endpoint.on():  # the person's own server loads its model itself
+                warm_model(model)
             return self._send(200, {"ok": True})
         if url.path == "/api/engine":
             started = start_job("engine", "AI engine (Ollama)", engine_worker)

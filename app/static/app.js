@@ -146,7 +146,8 @@ async function loadStatus() {
 
 function schedulePoll() {
   clearTimeout(pollTimer);
-  const quick = activeJobs().length || state?.setup || state?.warming.length || state?.ollama_starting || !state?.ollama;
+  const quick = activeJobs().length || state?.setup || state?.warming.length || state?.ollama_starting
+    || (!state?.ollama && !state?.endpoint?.on);
   pollTimer = setTimeout(loadStatus, quick ? 1500 : isReady() ? 15000 : 6000);
 }
 
@@ -158,6 +159,11 @@ function renderStatus() {
   const s = state;
   if (s.setup) {
     setStatus("warn", `Setting up: ${setupSteps(s).pct}% downloaded`);
+  } else if (!s.ollama && s.endpoint?.on) {
+    setStatus("warn", `Your server at ${esc(s.endpoint.url)} isn't answering`
+      + (s.endpoint.error ? ` (${esc(s.endpoint.error)})` : "")
+      + ` · <button class="link" type="button" id="status-endpoint">Check it</button>`);
+    $("status-endpoint").onclick = openModels;
   } else if (!s.ollama) {
     setStatus(s.ollama_installed ? "warn" : "off", s.ollama_installed
       ? (s.ollama_starting ? "Starting the AI engine…"
@@ -181,7 +187,8 @@ function showModel() {
   els.using.hidden = !currentModel;
   if (currentModel) {
     els.using.innerHTML = `Answering with <strong>${esc(nameOf(currentModel))}</strong>`
-      + (entry ? ` by ${esc(entry.maker)}. ${esc(entry.blurb)}` : ".")
+      + (entry ? ` by ${esc(entry.maker)}. ${esc(entry.blurb)}`
+        : state?.endpoint?.on ? ` from your own server, at ${esc(state.endpoint.url)}.` : ".")
       + ` <button class="ghost" type="button" id="change-model">Change model</button>`;
     $("change-model").onclick = openModels;
   }
@@ -207,7 +214,7 @@ function selectModel(model, btn = null) {
   if (chatting && !confirmClick(btn, "Starts a new chat: click again")) return;
   currentModel = model;
   remember("model", model);
-  warm(model);
+  if (!state?.endpoint?.on) warm(model);
   if (chatting) newChat();
   if (els.dialog.open) els.dialog.close();
   showModel();
@@ -267,7 +274,8 @@ function modelRows(container, { onlyFitting = false } = {}) {
   }
   const others = state.models.filter((m) => !state.catalog.some((c) => c.installed && c.model === m.model));
   if (others.length && !onlyFitting) {
-    container.insertAdjacentHTML("beforeend", `<div class="group-title">Other models on this computer</div>`);
+    container.insertAdjacentHTML("beforeend",
+      `<div class="group-title">${state.endpoint?.on ? "Models your server offers" : "Other models on this computer"}</div>`);
     for (const m of others) {
       const current = m.model === currentModel;
       const row = document.createElement("div");
@@ -286,16 +294,70 @@ function modelRows(container, { onlyFitting = false } = {}) {
 
 function renderModels() {
   const engine = state.engine?.running;
-  els.modelsIntro.textContent = `This ${state.machine.os} computer has ${state.machine.ram_gb} GB of memory (RAM) and `
-    + `${state.disk_free_gb} GB of free disk space. Bigger models know more but need more memory and are slower. `
-    + "Download while you have internet, and leave Survival LLM open until it finishes; an interrupted download picks up where it left off."
-    + (engine ? ` AI engine: Ollama ${engine.version}, ${engine.ours ? "built into Survival LLM" : "the Ollama app running on this computer"}.` : "");
+  els.modelsIntro.textContent = state.endpoint?.on
+    ? `Answers come from your own server at ${state.endpoint.url}, so the models below are the ones it offers. `
+      + "Anything it serves works; the ones tested with Survival LLM look things up most reliably."
+    : `This ${state.machine.os} computer has ${state.machine.ram_gb} GB of memory (RAM) and `
+      + `${state.disk_free_gb} GB of free disk space. Bigger models know more but need more memory and are slower. `
+      + "Download while you have internet, and leave Survival LLM open until it finishes; an interrupted download picks up where it left off."
+      + (engine ? ` AI engine: Ollama ${engine.version}, ${engine.ours ? "built into Survival LLM" : "the Ollama app running on this computer"}.` : "");
   modelRows(els.modelsList);
+  renderEndpoint();
 }
 function openModels() {
   if (!state) return;
   renderModels();
   els.dialog.showModal();
+}
+
+// ---------- a model server the person already runs, instead of Ollama (endpoint.py) ----------
+const endpointBox = () => $("endpoint-box");
+
+function renderEndpoint() {
+  const e = state?.endpoint;
+  if (!e || !endpointBox()) return;
+  if (!endpointBox().dataset.touched) {  // never overwrite what they are typing
+    $("endpoint-url").value = e.url || "";
+    $("endpoint-model").value = e.model || "";
+  }
+  $("endpoint-key").placeholder = e.key ? "saved; leave this empty to keep it" : "only if your server asks for one";
+  $("endpoint-forget").hidden = !e.on;
+  $("endpoint-status").textContent = e.on
+    ? `Answering with ${e.model} from ${e.url}.` + (e.error ? ` It isn't answering now: ${e.error}.` : "")
+    : "Answers come from Ollama. Point this at a server of your own to use that instead.";
+  if (e.on) endpointBox().open = true;
+}
+
+async function endpointAction(action) {
+  const body = { action, url: $("endpoint-url").value, model: $("endpoint-model").value, key: $("endpoint-key").value };
+  $("endpoint-status").textContent = action === "test" ? "Asking that server what models it offers…" : "Saving…";
+  try {
+    const resp = await api("/api/endpoint", { method: "POST", body: JSON.stringify(body) });
+    const r = await resp.json();
+    if (!resp.ok) { $("endpoint-status").textContent = r.error || "Couldn't do that."; return; }
+    $("endpoint-models").innerHTML = (r.models || []).map((m) => `<option value="${esc(m)}"></option>`).join("");
+    if (action === "test") {
+      $("endpoint-status").textContent = r.ok
+        ? `That server offers ${r.models.length} model${r.models.length === 1 ? "" : "s"}. Pick one above, then Use it.`
+        : r.error;
+      return;
+    }
+    $("endpoint-key").value = "";
+    delete endpointBox().dataset.touched;
+    await loadStatus();
+    announce(action === "forget" ? "Using Ollama again." : `Answers now come from ${$("endpoint-model").value}.`);
+  } catch (err) {
+    if (!(err instanceof StaleTab)) $("endpoint-status").textContent = "Couldn't reach Survival LLM. Is it still running?";
+  }
+}
+
+if (endpointBox()) {
+  endpointBox().addEventListener("input", () => { endpointBox().dataset.touched = "1"; });
+  $("endpoint-test").onclick = () => endpointAction("test");
+  $("endpoint-save").onclick = () => endpointAction("save");
+  $("endpoint-forget").onclick = (e) => {
+    if (confirmClick(e.currentTarget, "Click again to go back to Ollama")) endpointAction("forget");
+  };
 }
 
 async function startModelDownload(c) {
@@ -579,7 +641,7 @@ function renderSetup() {
   // someone who has a library (an existing user, whose models aren't known yet); and someone with an AI but no
   // library (a download never finished, or the library is on a drive that's unplugged) gets the app with a note.
   const engineStarting = !s.ollama && s.ollama_installed;
-  const show = !!s.setup || (!s.models.length && !(engineStarting && s.library));
+  const show = !s.endpoint?.on && (!!s.setup || (!s.models.length && !(engineStarting && s.library)));
   const firstRun = show && !s.models.length;  // nothing to chat with yet: no toolbar or question box
   const chatting = !!els.messages.querySelector(".msg");
   if (s.setup) sawSetup = true;

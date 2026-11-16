@@ -290,6 +290,17 @@ textarea:focus { border-color: var(--accent); }
 .primary { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 10px; padding: 7px 14px;
   font-weight: 600; cursor: pointer; }
 .primary:disabled, .ghost:disabled { opacity: .55; cursor: default; }
+/* A model server the person already runs (endpoint.py): closed by default, and only then a line of its own. */
+.endpoint { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
+.endpoint summary { cursor: pointer; font-weight: 650; color: var(--muted); }
+.endpoint summary:hover { color: var(--text); }
+.endpoint[open] summary { color: var(--text); }
+.endpoint .meta { max-width: 68ch; }
+.field { display: block; margin: 10px 0 0; font-size: 13px; font-weight: 600; color: var(--muted); }
+.field input { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 7px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text);
+  font-size: 14px; font-weight: 400; }
+.field input:focus { border-color: var(--accent); outline: none; }
 
 @media (max-width: 820px) {
   .layout.with-reader { grid-template-columns: minmax(0, 1fr); }
